@@ -695,6 +695,7 @@ NMS, собственных потоков с обращениями к API, `Bu
 
 ```bash
 ./scripts/smoke-test.sh                # скачает Folia 26.1.2, запустит, проверит, напечатает PASS/FAIL
+./scripts/smoke-test.sh --dry-run      # всё подготовить (скачать сервер, разложить JAR), но не запускать
 ./scripts/smoke-test.sh --reuse        # повторный прогон (мир и libraries уже на месте)
 ./scripts/smoke-test.sh --version 26.1.2 --server-jar /path/folia.jar
 SMOKE_XMX=512M ./scripts/smoke-test.sh   # на слабой машине/в контейнере

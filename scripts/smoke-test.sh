@@ -23,7 +23,9 @@
 set -euo pipefail
 
 VERSION="26.1.2"
+DRY_RUN=0
 SKIP_BUILD=0
+REUSE=0
 KEEP=0
 SERVER_JAR=""
 WORK_DIR="${SMOKE_DIR:-/tmp/pingshield-smoke}"
@@ -39,6 +41,7 @@ while [ $# -gt 0 ]; do
         --skip-build)  SKIP_BUILD=1; shift ;;
         --keep)        KEEP=1; shift ;;
         --reuse)       REUSE=1; shift ;;   # не пересоздавать папку сервера (мир и libraries уже на месте)
+        --dry-run)     DRY_RUN=1; shift ;; # всё подготовить, но сервер не запускать
         *) echo "неизвестный аргумент: $1" >&2; exit 2 ;;
     esac
 done
@@ -55,7 +58,7 @@ command -v java >/dev/null || { bad "не найден java (нужен JDK 25: 
 command -v curl >/dev/null || { bad "не найден curl"; exit 1; }
 
 # --- 1. сборка ---------------------------------------------------------------
-if [ "$SKIP_BUILD" = "0" ]; then
+if [ "${SKIP_BUILD:-0}" = "0" ]; then
     say "Сборка плагина (./gradlew build)…"
     ./gradlew build --no-daemon --console=plain -q
 fi
@@ -81,7 +84,7 @@ SERVER_JAR="$(cd "$(dirname "$SERVER_JAR")" && pwd)/$(basename "$SERVER_JAR")"
 ok "Сервер: $(basename "$SERVER_JAR") ($(du -h "$SERVER_JAR" | cut -f1))"
 
 # --- 3. песочница сервера ----------------------------------------------------
-if [ "$REUSE" = "1" ] && [ -d "$WORK_DIR/run" ]; then
+if [ "${REUSE:-0}" = "1" ] && [ -d "$WORK_DIR/run" ]; then
     say "Переиспользую папку сервера (мир и libraries на месте) — быстрее и легче по памяти"
     rm -f "$WORK_DIR/run/plugins/"*.jar
 else
@@ -104,6 +107,16 @@ if ! ls "$WORK_DIR/run/plugins/"PingShield-*.jar >/dev/null 2>&1; then
     exit 1
 fi
 LOG="$WORK_DIR/console.log"
+
+if [ "${DRY_RUN:-0}" = "1" ]; then
+    say "Режим --dry-run: сервер не запускаю. Подготовлено:"
+    echo "  JAR плагина : $WORK_DIR/run/plugins/$(basename "$PLUGIN_JAR")"
+    echo "  JAR сервера : $SERVER_JAR"
+    echo "  папка сервера: $WORK_DIR/run"
+    echo "  команда     : java -Xmx$XMX $JAVA_OPTS -jar $SERVER_JAR --nogui  (из папки $WORK_DIR/run)"
+    ok "Подготовка прошла без ошибок"
+    exit 0
+fi
 
 # --- 4. запуск и команды -----------------------------------------------------
 say "Запускаю сервер, жду ${BOOT_WAIT} с, затем выполняю команды…"
@@ -157,7 +170,7 @@ else
     bad "FAIL: смотрите лог $LOG"
 fi
 
-if [ "$KEEP" = "0" ]; then
+if [ "${KEEP:-0}" = "0" ]; then
     # Папку run оставляем: повторный прогон с --reuse не будет качать и генерировать мир заново
     say "Папка сервера сохранена для повторного прогона: $WORK_DIR/run"
 else
