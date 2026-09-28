@@ -1,0 +1,7 @@
+# Единый стиль переводов строк: исходники и wrapper — LF,
+# .bat — CRLF (иначе не запускается в cmd.exe).
+* text=auto eol=lf
+*.bat text eol=crlf
+gradlew text eol=lf
+*.jar binary
+*.png binary

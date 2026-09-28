@@ -1,0 +1,41 @@
+# PingShield × LuckPerms — команды для копирования в консоль сервера
+# (выполняются от консоли, без ведущего слэша; строки с # — комментарии)
+
+# === Персонал ===
+lp group staff permission set pingshield.admin true
+lp group moderator permission set pingshield.command.status true
+lp group moderator permission set pingshield.command.check true
+lp group moderator permission set pingshield.command.profile true
+lp group moderator permission set pingshield.notify true
+lp group moderator permission set pingshield.coreprotect true
+
+# === Отдельные подкоманды для узких ролей ===
+lp group helper permission set pingshield.command.perms true
+lp group helper permission set pingshield.command.via true
+
+# === Игроки с нестабильным каналом (мобильный интернет) ===
+lp group mobile permission set pingshield.threshold.4500 true
+
+# === Персональные значения ===
+# порог через meta (приоритетнее прав)
+lp user Steve meta set pingshield-threshold 4000
+# порог правом
+lp user Alex permission set pingshield.threshold.2500 true
+# щит без заморозки: играть можно, урон в обе стороны отключён
+lp user Alex meta set pingshield-freeze-mode immunity_only
+# режим заморозки без полёта (дружелюбно к античитам)
+lp user Herobrine meta set pingshield-freeze-mode teleport
+
+# === Контексты ===
+# обход защиты только на арене
+lp user Steve permission set pingshield.bypass true world=arena
+# порог только на одном сервере сети
+lp group mobile permission set pingshield.threshold.4000 true server=survival
+# отключить защиту полностью для режима креатива (через свойство мира)
+lp group builder permission set pingshield.bypass true world=creative_plots
+
+# === Проверка ===
+permparents Steve pingshield.threshold.4500
+permission check Steve pingshield.bypass
+# и внутри плагина:
+pingshield perms Steve

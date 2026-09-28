@@ -1,0 +1,25 @@
+# --- Gradle ---
+.gradle/
+build/
+
+# --- IDE ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+nbproject/
+
+# --- ОС ---
+.DS_Store
+Thumbs.db
+
+# --- Локальный сервер и логи (задача ./gradlew deploy, pluginsDir) ---
+server/
+run/
+logs/
+plugins/
+*.log
+
+# --- Временные файлы плагина, если папка сервера оказалась внутри проекта ---
+audit.log

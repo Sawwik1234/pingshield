@@ -1,0 +1,103 @@
+name: PingShield
+version: '${version}'
+main: com.sawwik.pingshield.PingShieldPlugin
+description: Защита игроков с очень высоким пингом (3000-5000 ms) — заморозка движения и иммунитет к урону. Полная поддержка Folia.
+api-version: '26.1'
+folia-supported: true
+# Не обязательны, но если установлены — используются:
+#   CoreProtect — маркеры защиты в логах + проверка изменений вокруг игрока
+#   ViaVersion/ViaBackwards — определение клиентской версии и пороги для транслируемых клиентов
+softdepend: [CoreProtect, ViaVersion, ViaBackwards, LuckPerms]
+authors: [Sawwik]
+website: https://github.com/sawwik
+
+commands:
+  pingshield:
+    description: Управление PingShield
+    usage: /pingshield <reload|status|check|protect|unprotect|info|profile|perf|cp|search|perms|via|help>
+    aliases: [pshield, pingprotect, pp]
+    permission: pingshield.admin
+
+permissions:
+  # ---------------------------------------------------------------------------------------
+  #  «Зонтик»: даёт всё. Раздавайте группе персонала:
+  #      /lp group staff permission set pingshield.admin true
+  # ---------------------------------------------------------------------------------------
+  pingshield.admin:
+    description: Доступ ко всем командам PingShield
+    default: op
+    children:
+      pingshield.command.reload: true
+      pingshield.command.status: true
+      pingshield.command.check: true
+      pingshield.command.protect: true
+      pingshield.command.unprotect: true
+      pingshield.command.info: true
+      pingshield.command.profile: true
+      pingshield.command.perf: true
+      pingshield.command.cp: true
+      pingshield.command.search: true
+      pingshield.command.perms: true
+      pingshield.command.via: true
+      pingshield.notify: true
+
+  # --- отдельные подкоманды (для разделения обязанностей) ---
+  pingshield.command.reload:
+    description: /pingshield reload — перезагрузка конфига
+    default: op
+  pingshield.command.status:
+    description: /pingshield status — список защищённых игроков
+    default: op
+  pingshield.command.check:
+    description: /pingshield check <игрок> — пинг и состояние игрока
+    default: op
+  pingshield.command.protect:
+    description: /pingshield protect <игрок> — ручная защита
+    default: op
+  pingshield.command.unprotect:
+    description: /pingshield unprotect <игрок> — снять защиту
+    default: op
+  pingshield.command.info:
+    description: /pingshield info — состояние конфигурации
+    default: op
+  pingshield.command.profile:
+    description: /pingshield profile <игрок> — диагностика пинга игрока
+    default: op
+  pingshield.command.perf:
+    description: /pingshield perf — метрики стоимости цикла
+    default: op
+  pingshield.command.cp:
+    description: /pingshield cp <игрок> — отчёт CoreProtect
+    default: op
+  pingshield.command.search:
+    description: /pingshield search — кнопки поиска CoreProtect
+    default: op
+  pingshield.command.perms:
+    description: /pingshield perms <игрок> — эффективные права и источники порогов
+    default: op
+  pingshield.command.via:
+    description: /pingshield via — сводка по клиентским версиям (Via)
+    default: op
+
+  # --- права для игроков ---
+  pingshield.bypass:
+    description: Игрок никогда не попадает под защиту (обход)
+    default: false
+  pingshield.notify:
+    description: Уведомления о входах других игроков в защиту
+    default: op
+  pingshield.notify.self:
+    description: Дублировать игроку личное уведомление при входе в защиту
+    default: true
+  pingshield.coreprotect:
+    description: Доступ к интеграции CoreProtect (встроенный поиск)
+    default: op
+
+  # --- шаблон персонального порога (значение задаётся в самом праве) ---
+  # Примеры:
+  #   /lp group mobile permission set pingshield.threshold.4000 true     — порог 4000 ms
+  #   /lp user Steve permission set pingshield.threshold.2500 true       — порог 2500 ms
+  #   /lp user Steve permission set pingshield.bypass true world=arena   — обход только на арене
+  pingshield.threshold:
+    description: 'Шаблон персонального порога. Используйте право с числом, например pingshield.threshold.4000'
+    default: false
