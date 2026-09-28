@@ -8,12 +8,14 @@ import net.kyori.adventure.bossbar.BossBar;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 
@@ -27,6 +29,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -126,8 +129,15 @@ public final class ProtectionManager {
     private volatile long totalTicks;
     private volatile int releaseChecks; // сколько плановых снятий защиты проверено
 
+    /** Ключ «расписки» о заморозке в данных игрока (см. {@link StuckStateMarker}). */
+    private final NamespacedKey stuckStateKey;
+
+    /** Ограничение частоты предупреждений о потерянных действиях (не чаще раза в 10 секунд). */
+    private final AtomicLong lastRunOnWarningAt = new AtomicLong();
+
     public ProtectionManager(PingShieldPlugin plugin, PingShieldConfig cfg) {
         this.plugin = plugin;
+        this.stuckStateKey = new NamespacedKey(plugin, StuckStateMarker.PDC_KEY);
         this.cfg = cfg;
         this.audit = new AuditLog(plugin, cfg.auditEnabled, cfg.auditFileName);
         this.coreProtect = new CoreProtectHook(plugin, cfg);
@@ -830,6 +840,139 @@ public final class ProtectionManager {
         updateIndicator(player, protection, now);
     }
 
+    // ================================================================== расписка о заморозке
+
+    /**
+     * Записывает расписку о текущей заморозке в данные игрока (в регионе игрока, один раз).
+     * Значения — те, что были у игрока <b>до</b> нашей правки (снимок {@link Protection}).
+     */
+    private void writeStuckMarker(Player player, Protection protection) {
+        try {
+            var container = player.getPersistentDataContainer();
+            if (container.has(stuckStateKey, PersistentDataType.STRING)) {
+                return; // уже записано для этой защиты
+            }
+            StuckStateMarker marker = StuckStateMarker.fromSnapshot(
+                    protection.hadInvulnerable(), protection.getPrevWalkSpeed(), protection.getPrevFlySpeed(),
+                    protection.hadAllowFlight(), protection.hadFlying(), protection.hadCollidable(),
+                    protection.hadFoodLevel(), protection.hadSaturation());
+            container.set(stuckStateKey, PersistentDataType.STRING, marker.encode());
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.FINE,
+                    "Не удалось записать маркер заморозки для " + player.getName(), throwable);
+        }
+    }
+
+    /** Убирает расписку (состояние возвращено штатно). */
+    private void clearStuckMarker(Player player) {
+        try {
+            player.getPersistentDataContainer().remove(stuckStateKey);
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.FINE,
+                    "Не удалось убрать маркер заморозки у " + player.getName(), throwable);
+        }
+    }
+
+    /** Вход игрока: если осталась расписка — вернуть записанные значения и убрать её. */
+    private void repairStuckState(Player player) {
+        try {
+            var container = player.getPersistentDataContainer();
+            String raw = container.get(stuckStateKey, PersistentDataType.STRING);
+            if (raw == null) {
+                return;
+            }
+            container.remove(stuckStateKey);
+            StuckStateMarker marker = StuckStateMarker.decode(raw);
+            if (marker == null) {
+                plugin.getLogger().warning("PingShield: у игрока " + player.getName()
+                        + " найден повреждённый маркер заморозки — состояние не меняю, маркер убран");
+                return;
+            }
+            applyStuckState(player, marker);
+            plugin.getLogger().warning("PingShield: игрок " + player.getName()
+                    + " был заморожен в момент выхода — состояние возвращено (неуязвимость="
+                    + marker.invulnerable() + ", скорость ходьбы=" + marker.walkSpeed()
+                    + ", скорость полёта=" + marker.flySpeed() + ")");
+            audit.write(player.getName(), "STATE_REPAIR_ON_JOIN",
+                    "восстановлено состояние прошлой сессии: inv=" + marker.invulnerable()
+                            + " walk=" + marker.walkSpeed() + " fly=" + marker.flySpeed());
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.WARNING, "Не удалось восстановить состояние игрока "
+                    + player.getName() + " при входе", throwable);
+        }
+    }
+
+    /** Применяет записанные значения. Порядок важен: сначала гасим полёт, потом меняем право полёта. */
+    private void applyStuckState(Player player, StuckStateMarker marker) {
+        if (marker.flying()) {
+            player.setAllowFlight(true);
+            player.setFlying(true);
+        } else {
+            player.setFlying(false);
+            player.setAllowFlight(marker.allowFlight());
+        }
+        player.setFlySpeed(marker.flySpeed());
+        player.setWalkSpeed(marker.walkSpeed());
+        player.setInvulnerable(marker.invulnerable());
+        player.setCollidable(marker.collidable());
+        player.setFoodLevel(marker.foodLevel());
+        player.setSaturation(marker.saturation());
+    }
+
+    /** Снятие защиты в момент выхода: только возврат состояния, без чата и боссбара. */
+    private void restoreStateOnQuit(Player player, Protection protection) {
+        try {
+            if (!protection.isImmunityOnly()) {
+                releaseFreeze(player, protection); // внутри же убирается расписка
+            } else {
+                clearStuckMarker(player); // у щита без заморозки сущность не менялась
+            }
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.WARNING, "Не удалось вернуть состояние игроку "
+                    + player.getName() + " при выходе — это будет сделано при следующем входе", throwable);
+        }
+    }
+
+    /**
+     * Как {@link #runOn(Player, Runnable)}, но сообщает, удалось ли доставить действие, и пишет
+     * видимое предупреждение (не чаще раза в 10 секунд), если нет. Нужно там, где потеря действия
+     * означает «игрок остался замороженным»: молчаливый {@code FINE} для такого случая не годится.
+     */
+    private boolean runOnChecked(Player player, String what, Runnable action) {
+        if (player == null || !player.isOnline()) {
+            return false;
+        }
+        try {
+            if (Bukkit.isOwnedByCurrentRegion(player)) {
+                action.run();
+                return true;
+            }
+            player.getScheduler().run(plugin, task -> {
+                if (player.isOnline()) {
+                    action.run();
+                }
+            }, null);
+            return true;
+        } catch (Throwable throwable) {
+            if (Bukkit.isOwnedByCurrentRegion(player)) {
+                try {
+                    action.run();
+                } catch (Throwable ignored) {
+                    // сервер останавливается
+                }
+                return true;
+            }
+            long now = System.currentTimeMillis();
+            long last = lastRunOnWarningAt.get();
+            if (now - last > 10_000L && lastRunOnWarningAt.compareAndSet(last, now)) {
+                plugin.getLogger().log(Level.WARNING, "PingShield: не удалось выполнить \"" + what
+                        + "\" в регионе игрока " + player.getName()
+                        + " — состояние восстановится при следующем входе (маркер заморозки)", throwable);
+            }
+            return false;
+        }
+    }
+
     // ================================================================== пороги и условия
 
     /**
@@ -1074,7 +1217,9 @@ public final class ProtectionManager {
 
         Player target = (player != null && player.isOnline()) ? player : Bukkit.getPlayer(protection.getUuid());
         if (target != null && target.isOnline()) {
-            runOn(target, () -> {
+            // Если доставить не удалось — в логе будет WARNING, а состояние игрока починится
+            // при следующем входе по маркеру (writeStuckMarker).
+            runOnChecked(target, "снятие защиты", () -> {
                 releaseFreeze(target, protection);
                 sendProtectEnd(target, protection, reason);
             });
@@ -1167,15 +1312,30 @@ public final class ProtectionManager {
     }
 
     public void releaseAll(EndReason reason) {
+        List<String> failed = new ArrayList<>();
         for (Protection protection : new ArrayList<>(active.values())) {
             try {
-                end(Bukkit.getPlayer(protection.getUuid()), protection, reason);
+                Player target = Bukkit.getPlayer(protection.getUuid());
+                if (target != null && target.isOnline()) {
+                    if (!runOnChecked(target, "снятие защиты при выключении",
+                            () -> end(target, protection, reason))) {
+                        failed.add(protection.getName());
+                    }
+                } else {
+                    end(null, protection, reason); // игрока нет в сети — восстанавливать нечего
+                }
             } catch (Throwable throwable) {
                 plugin.getLogger().log(Level.FINE,
                         "Не удалось корректно снять защиту с " + protection.getName(), throwable);
+                failed.add(protection.getName());
             }
         }
         active.clear();
+        if (!failed.isEmpty()) {
+            plugin.getLogger().warning("PingShield: защиту не удалось снять в потоке игрока у "
+                    + failed.size() + " игрок(ов): " + String.join(", ", failed)
+                    + " — состояние вернётся при следующем входе (маркер заморозки)");
+        }
     }
 
     /**
@@ -1222,6 +1382,10 @@ public final class ProtectionManager {
         if (!protection.isSnapshotTaken()) {
             protection.captureSnapshot(player);
         }
+
+        // «Расписка» в данных игрока: что вернуть, если защиту не удастся снять штатно
+        // (выход игрока, краш сервера, выключение плагина). Пишется один раз за защиту.
+        writeStuckMarker(player, protection);
 
         // Настоящее «бессмертие» (не GM1, не креатив): флаг сущности блокирует урон на уровне
         // сервера для любого источника, кроме обходящих неуязвимость (пустота, /kill) — их
@@ -1558,6 +1722,8 @@ public final class ProtectionManager {
 
             hideIndicator(player, protection);
             applyReleaseEffects(player);
+            // Состояние возвращено — расписка больше не нужна.
+            clearStuckMarker(player);
         } catch (Throwable throwable) {
             plugin.getLogger().log(Level.WARNING, "Не удалось корректно разморозить " + player.getName()
                     + " — проверьте конфликты с другими плагинами", throwable);
@@ -1852,6 +2018,9 @@ public final class ProtectionManager {
 
     public void handleJoin(Player player) {
         detectProxy(player);
+        // Прошлая сессия закончилась, не сняв защиту (краш, /reload, жёсткое выключение,
+        // версии до 1.6.5): расписка в данных игрока возвращает состояние до заморозки.
+        repairStuckState(player);
         UUID id = player.getUniqueId();
         PingState state = new PingState();
         state.joinAt = System.currentTimeMillis();
@@ -1872,9 +2041,13 @@ public final class ProtectionManager {
         recentDamageUntil.remove(id);
         Protection protection = active.remove(id);
         if (protection != null) {
-            protection.markReleased(); // восстанавливать состояние некому: игрок вышел
+            // Игрок выходит ЗАМОРОЖЕННЫМ. Событие выхода выполняется в регионе игрока, поэтому
+            // состояние нужно вернуть прямо сейчас: сервер сохранит playerdata уже после этого,
+            // иначе заморозка «залипнет» на следующем входе (не сможет ходить / будет бессмертным).
+            restoreStateOnQuit(player, protection);
+            protection.markReleased();
             audit.write(player.getName(), "PROTECT_END",
-                    "reason=QUIT elapsed=" + protection.getElapsedSeconds() + "s");
+                    "reason=QUIT elapsed=" + protection.getElapsedSeconds() + "s state=restored");
         }
     }
 

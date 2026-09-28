@@ -112,8 +112,28 @@ jobs:
           name: PingShield-jar
           path: dist
 
+      # SHA-256 рядом с JAR: админ скачивает файл и сверяет хэш (certutil -hashfile ... SHA256)
+      - name: Compute SHA-256
+        run: |
+          cd dist
+          for f in PingShield-*.jar; do
+            sha256sum "$f" | awk '{print $1"  "$2}' > "$f.sha256"
+            echo "--- $f.sha256 ---"
+            cat "$f.sha256"
+          done
+
+      # Примечания к релизу берём из CHANGELOG.md (раздел этой версии), а не из «Full Changelog»
+      - name: Release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 scripts/release-notes.py "$VERSION" > dist/RELEASE_NOTES.md
+          echo "--- примечания ---"
+          cat dist/RELEASE_NOTES.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PingShield-*.jar
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
+          files: |
+            dist/PingShield-*.jar
+            dist/PingShield-*.jar.sha256
