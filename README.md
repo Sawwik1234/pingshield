@@ -1,7 +1,7 @@
 # PingShield
 
 **Защита игроков с очень высоким пингом (3000–5000 ms) для Paper / Purpur / Folia 26.1.2.**
-Автор: **Sawwik** · Java 25 · api-version `26.1` · `folia-supported: true` · версия 1.2.0
+Автор: **Sawwik** · Java 25 · api-version `26.1` · `folia-supported: true` · версия 1.5.0
 
 > **Идея:** пока пинг игрока выше порога, он **бессмертен**, но **не может ничего**: не двигается,
 > не бьёт, не ломает, не использует предметы, не подбирает лут, не открывает инвентарь,
@@ -214,12 +214,12 @@ sample(): 6.95 нс на вызов
 ## 7. Сборка и установка
 
 ```bash
-./gradlew build          # JAR → build/libs/PingShield-1.2.0.jar (и копия в artifacts/)
+./gradlew build          # JAR → build/libs/PingShield-1.5.0.jar (и копия в artifacts/)
 ./gradlew deploy         # собрать и положить в папку сервера (pluginsDir в gradle.properties)
 ./gradlew simulate       # симуляция поведения на плохих каналах
 ```
 
-Установка: положить `PingShield-1.2.0.jar` в `plugins/`, перезапустить сервер (рестарт, не `/reload`),
+Установка: положить `PingShield-1.5.0.jar` в `plugins/`, перезапустить сервер (рестарт, не `/reload`),
 настроить `plugins/PingShield/config.yml` и выполнить `/pingshield reload`.
 
 Требования: **Java 25** (как и весь Paper/Folia 26.x), api-version `26.1`, `folia-supported: true`.
