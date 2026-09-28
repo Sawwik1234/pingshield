@@ -1,6 +1,6 @@
 # PingShield
 
-[![Build](https://github.com/Sawwik1234/PingShield/actions/workflows/build.yml/badge.svg)](https://github.com/Sawwik1234/PingShield/actions/workflows/build.yml)
+[![Build](https://github.com/Sawwik1234/pingshield/actions/workflows/build.yml/badge.svg)](https://github.com/Sawwik1234/pingshield/actions/workflows/build.yml)
 
 **Защита игроков с очень высоким пингом (3000–5000 ms) для Paper / Purpur / Folia 26.1.2.**
 Автор: **Sawwik** · Java 25 · api-version `26.1` · `folia-supported: true` · версия 1.5.0
