@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "com.sawwik.pingshield"
-version = "1.6.3"
+version = providers.gradleProperty("version").orElse("1.6.3").get()
 description = "Защита игроков с очень высоким пингом: заморозка движения и иммунитет к урону. Folia-ready."
 
 // ---------------------------------------------------------------------------
