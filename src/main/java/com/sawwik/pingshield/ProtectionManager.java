@@ -612,7 +612,9 @@ public final class ProtectionManager {
         }
 
         if (state.chronicTriggered) {
-            return state.forcedImmunityOnly;
+            // После срабатывания KICK новые защиты уже не нужны; остальные политики
+            // продолжают разрешать следующую активацию.
+            return cfg.chronicAction == PingShieldConfig.ChronicAction.KICK;
         }
         state.chronicTriggered = true;
         audit.write(player.getName(), "CHRONIC_PING",
@@ -631,7 +633,9 @@ public final class ProtectionManager {
                 state.forcedImmunityOnly = true;
                 runOn(player, () -> Msg.send(player, cfg.prefix + cfg.msgChronicNotify,
                         "seconds", badSeconds, "total", cfg.chronicPingSeconds));
-                return true;
+                // Не прерываем обработку кандидата: beginProtection() создаст
+                // реальный щит без заморозки через forcedImmunityOnly.
+                return false;
             }
             case KICK -> {
                 state.holdUntil = now + 5_000L;
@@ -1223,8 +1227,6 @@ public final class ProtectionManager {
             return;
         }
 
-        PingShieldConfig.FreezeMode mode = protection.effectiveFreezeMode(cfg.freezeMode);
-
         // ЭЛИТРЫ. Раньше здесь было безусловное setGliding(false) — и это была половина причины
         // кика «Flying is not enabled on this server»: свернув элитры, плагин сам включал
         // серверную проверку зависания для игрока в воздухе (условие !isFallFlying). Теперь глайд
@@ -1269,7 +1271,8 @@ public final class ProtectionManager {
             }
         }
 
-        if (cfg.potionLock && cfg.freezeMode != PingShieldConfig.FreezeMode.TELEPORT) {
+        PingShieldConfig.FreezeMode mode = protection.effectiveFreezeMode(cfg.freezeMode);
+        if (cfg.potionLock && mode != PingShieldConfig.FreezeMode.TELEPORT) {
             // Дополнительный слой фиксации: если другой плагин сбросит walk-speed, Slowness 250 держит.
             applyEffect(player, protection, PotionEffectType.SLOWNESS, 60, 250);
         }
@@ -2068,11 +2071,13 @@ public final class ProtectionManager {
             return;
         }
         for (Player online : Bukkit.getOnlinePlayers()) {
-            if (!hasNotifyPermission(online)) {
-                continue;
-            }
             Player staff = online;
-            runOn(staff, () -> Msg.send(staff, message, placeholders));
+            // Проверка permission выполняется в регионе самого staff-игрока.
+            runOn(staff, () -> {
+                if (hasNotifyPermission(staff)) {
+                    Msg.send(staff, message, placeholders);
+                }
+            });
         }
     }
 
@@ -2082,14 +2087,19 @@ public final class ProtectionManager {
         }
         String message = cfg.prefix + cfg.msgNotifyStaff;
         for (Player online : Bukkit.getOnlinePlayers()) {
-            if (online.getUniqueId().equals(player.getUniqueId()) || !hasNotifyPermission(online)) {
+            if (online.getUniqueId().equals(player.getUniqueId())) {
                 continue;
             }
             Player staff = online;
-            runOn(staff, () -> Msg.send(staff, message,
-                    "player", player.getName(),
-                    "ping", protection.getLastPing(),
-                    "world", player.getWorld().getName()));
+            runOn(staff, () -> {
+                if (!hasNotifyPermission(staff)) {
+                    return;
+                }
+                Msg.send(staff, message,
+                        "player", player.getName(),
+                        "ping", protection.getLastPing(),
+                        "world", player.getWorld().getName());
+            });
         }
     }
 
@@ -2120,11 +2130,10 @@ public final class ProtectionManager {
                 }
             }, null);
         } catch (Throwable throwable) {
-            try {
-                action.run(); // плагин выключается — best-effort
-            } catch (Throwable ignored) {
-                // сервер останавливается
-            }
+            // Не выполняем entity-action напрямую после ошибки планировщика:
+            // на Folia это может означать чужой регион.
+            plugin.getLogger().log(Level.FINE,
+                    "Не удалось поставить действие в регион игрока " + player.getName(), throwable);
         }
     }
 
