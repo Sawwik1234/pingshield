@@ -59,39 +59,64 @@ push_git push --tags
 green "Код отправлен."
 
 # ------------------------------------------------------------------ ждём CI на теге
+# Разбор ответов GitHub — через python3 (json), а не sed: строка с ошибкой внутри
+# set -e не должна убивать скрипт, если запуск ещё не появился.
+api_get() { curl -fsS "${AUTH[@]}" "$1" 2>/dev/null || true; }
+
 info "Ищу запуск CI для тега v$VERSION..."
 DEADLINE=$(( $(date +%s) + 1500 ))
 RUN_ID=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-    RUN_ID="$(curl -fsS "${AUTH[@]}" \
-        "$API/repos/$REPO/actions/runs?event=push&per_page=30" \
-        | tr ',' '\n' | grep -A1 '"head_branch":"v'"$VERSION"'"' | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)"
+    RUN_ID="$(api_get "$API/repos/$REPO/actions/runs?event=push&per_page=40" | python3 -c '
+import sys, json, os
+want = "v" + os.environ.get("VERSION", "1.6.4")
+try:
+    runs = json.load(sys.stdin).get("workflow_runs", [])
+except Exception:
+    runs = []
+for run in runs:
+    if run.get("head_branch") == want:
+        print(run["id"]); break
+' VERSION="$VERSION")"
     [ -n "$RUN_ID" ] && break
     sleep 15
 done
 [ -n "$RUN_ID" ] || die "запуск CI для тега v$VERSION не появился за 25 минут"
 
-info "Запуск #$RUN_ID: жду завершения (сборка + smoke на настоящей Folia)…"
-STATUS=""
+info "Запуск #$RUN_ID: жду завершения (сборка + 72 теста + smoke на настоящей Folia)…"
+STATUS=""; CONCLUSION=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-    STATUS="$(curl -fsS "${AUTH[@]}" "$API/repos/$REPO/actions/runs/$RUN_ID" \
-        | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p' | head -1)"
+    read -r STATUS CONCLUSION <<<"$(api_get "$API/repos/$REPO/actions/runs/$RUN_ID" | python3 -c '
+import sys, json
+try:
+    run = json.load(sys.stdin)
+except Exception:
+    run = {}
+print(run.get("status") or "-", run.get("conclusion") or "-")
+')"
     [ "$STATUS" = "completed" ] && break
     sleep 20
 done
-[ "$STATUS" = "completed" ] || die "CI не завершился за 25 минут (смотреть: https://github.com/$REPO/actions/runs/$RUN_ID)"
-
-CONCLUSION="$(curl -fsS "${AUTH[@]}" "$API/repos/$REPO/actions/runs/$RUN_ID" \
-    | sed -n 's/.*"conclusion"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p' | head -1)"
 URL="https://github.com/$REPO/actions/runs/$RUN_ID"
+[ "$STATUS" = "completed" ] || die "CI не завершился за 25 минут — $URL"
 [ "$CONCLUSION" = "success" ] || die "CI завершился со статусом $CONCLUSION — $URL"
 green "CI успешен: $URL"
 
 # ------------------------------------------------------------------ проверка релиза
 info "Проверяю релиз v$VERSION…"
-RELEASE="$(curl -fsS "${AUTH[@]}" "$API/repos/$REPO/releases/tags/v$VERSION")" || die "релиз v$VERSION не найден"
-ASSET_URL="$(printf '%s' "$RELEASE" | tr ',' '\n' | sed -n 's/.*"browser_download_url":"\([^"]*PingShield-'"$VERSION"'\.jar\)".*/\1/p' | head -1)"
-[ -n "$ASSET_URL" ] || die "в релизе нет файла PingShield-$VERSION.jar"
+ASSET_URL="$(api_get "$API/repos/$REPO/releases/tags/v$VERSION" | python3 -c '
+import sys, json, os
+want = "PingShield-" + os.environ.get("VERSION", "1.6.4") + ".jar"
+try:
+    assets = json.load(sys.stdin).get("assets", [])
+except Exception:
+    assets = []
+for asset in assets:
+    if asset.get("name") == want:
+        print(asset["browser_download_url"]); break
+' VERSION="$VERSION")"
+[ -n "$ASSET_URL" ] || die "релиз v$VERSION не появился или в нём нет файла PingShield-$VERSION.jar"
+info "Релиз найден, скачиваю JAR и сверяю с собранным локально…"
 TMP="$(mktemp -d)"
 curl -fsSL -H "Authorization: Bearer $TOKEN" "$ASSET_URL" -o "$TMP/release.jar"
 GOT_BYTES="$(stat -c%s "$TMP/release.jar")"
