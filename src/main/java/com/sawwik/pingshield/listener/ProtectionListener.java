@@ -17,6 +17,9 @@ import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCreativeEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.PlayerAttemptPickupItemEvent;
 import org.bukkit.event.player.PlayerBedEnterEvent;
@@ -161,10 +164,9 @@ public final class ProtectionListener implements Listener {
         if (!manager.isFrozen(event.getPlayer())) {
             return;
         }
-        if (cfg.freezeMode == PingShieldConfig.FreezeMode.FLY
-                && (event.getVelocity().getX() != 0.0D || event.getVelocity().getZ() != 0.0D)) {
-            event.setCancelled(true);
-        } else if (event.getVelocity().lengthSquared() > 0.0001D) {
+        // В любом режиме заморозки запрещаем физическое перемещение от
+        // взрывов, поршней, рывков трезубца и других источников скорости.
+        if (event.getVelocity().lengthSquared() > 0.0001D) {
             event.setCancelled(true);
         }
     }
@@ -403,10 +405,35 @@ public final class ProtectionListener implements Listener {
         }
     }
 
+    /**
+     * Закрываем и уже открытый инвентарь: игрок мог открыть сундук
+     * до того, как PingShield включился.
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (event.getWhoClicked() instanceof Player player && frozenInteraction(player)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        if (event.getWhoClicked() instanceof Player player && frozenInteraction(player)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onInventoryCreative(InventoryCreativeEvent event) {
+        if (event.getWhoClicked() instanceof Player player && frozenInteraction(player)) {
+            event.setCancelled(true);
+        }
+    }
+
     /** Замороженный не подбирает предметы — он вообще ничего не делает. */
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onPickup(PlayerAttemptPickupItemEvent event) {
-        if (frozenInteraction(event.getPlayer())) {
+        if (cfg.blockItemPickup && frozenInteraction(event.getPlayer())) {
             event.setCancelled(true);
         }
     }
