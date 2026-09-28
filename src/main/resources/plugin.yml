@@ -14,7 +14,7 @@ website: https://github.com/sawwik
 commands:
   pingshield:
     description: Управление PingShield
-    usage: /pingshield <reload|status|check|protect|unprotect|info|profile|perf|cp|search|perms|via|help>
+    usage: /pingshield <reload|status|net|check|protect|unprotect|info|profile|perf|cp|search|perms|via|help>
     aliases: [pshield, pingprotect, pp]
     permission: pingshield.admin
 
@@ -30,10 +30,7 @@ permissions:
       pingshield.command.reload: true
       pingshield.command.status: true
       pingshield.command.net: true
-      pingshield.command.net:
-    description: /pingshield net — состояние сети целиком (медиана пинга, общий скачок)
-    default: op
-  pingshield.command.check: true
+      pingshield.command.check: true
       pingshield.command.protect: true
       pingshield.command.unprotect: true
       pingshield.command.info: true

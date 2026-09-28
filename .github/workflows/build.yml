@@ -61,9 +61,46 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Настоящий сервер: скачиваем актуальный билд Folia, кладём собранный JAR,
+  # поднимаем его и смотрим лог. Это ловит то, что не видит ни один юнит-тест:
+  # невалидный plugin.yml, несовместимость API, падение при включении.
+  smoke:
+    name: Smoke test on real Folia
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Download built JAR
+        uses: actions/download-artifact@v4
+        with:
+          name: PingShield-jar
+          path: build/libs
+
+      - name: Run smoke test
+        run: |
+          chmod +x ./scripts/smoke-test.sh
+          ./scripts/smoke-test.sh --skip-build
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-server-log
+          path: /tmp/pingshield-smoke/console.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   release:
     name: Attach JAR to release
-    needs: build
+    needs: [build, smoke]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

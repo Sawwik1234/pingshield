@@ -23,3 +23,15 @@ plugins/
 
 # --- Временные файлы плагина, если папка сервера оказалась внутри проекта ---
 audit.log
+
+# --- артефакты, если сервер запускали прямо в папке проекта (./scripts/smoke-test.sh делает это в /tmp) ---
+cache/
+versions/
+libraries/
+eula.txt
+server.properties
+banned-ips.json
+banned-players.json
+ops.json
+usercache.json
+whitelist.json
