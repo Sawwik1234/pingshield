@@ -83,6 +83,19 @@ class PingShieldConfigTest {
     }
 
     @Test
+    @DisplayName("элитры, воздух и песок: штатные значения безопасны")
+    void flyingKickDefaults() {
+        PingShieldConfig config = new PingShieldConfig();
+        config.load(shipped());
+        assertTrue(config.keepGliding, "freeze.keep-gliding: заморозка не должна сворачивать элитры — "
+                + "иначе сервер кикает игрока в воздухе через 4 секунды");
+        assertTrue(config.preventFlyingKick, "freeze.prevent-flying-kick: страховка включена по умолчанию");
+        assertTrue(config.keepAir, "freeze.keep-air: замороженный под водой игрок не должен тонуть");
+        assertTrue(config.escapeSuffocation, "release.safety.escape-suffocation: засыпанного песком выпускаем");
+        assertEquals(8, config.escapeSearchBlocks, "release.safety.escape-search-blocks");
+    }
+
+    @Test
     @DisplayName("Пять новых сообщений присутствуют в штатном config.yml")
     void shippedMessagesExist() {
         PingShieldConfig config = new PingShieldConfig();

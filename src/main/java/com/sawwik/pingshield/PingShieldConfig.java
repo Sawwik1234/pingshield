@@ -146,6 +146,16 @@ public final class PingShieldConfig {
     public boolean potionLock = true;
     public boolean noCollision = true;
     public boolean freezeAllowVertical = false;
+    /** Не сворачивать элитры при заморозке (см. FlightGuard). */
+    public boolean keepGliding = true;
+    /** Страховка от серверного кика FLYING_PLAYER/FLYING_VEHICLE, пока игрок под защитой. */
+    public boolean preventFlyingKick = true;
+    /** Держать запас воздуха полным, пока игрок заморожен (см. EnvironmentGuard). */
+    public boolean keepAir = true;
+    /** Выталкивать игрока из блока при разморозке, иначе он задохнётся (песок, гравий, обвал). */
+    public boolean escapeSuffocation = true;
+    /** На сколько блоков вверх искать свободное место при выталкивании из блока. */
+    public int escapeSearchBlocks = 8;
     public boolean teleportBack = true;
     public double teleportBackTolerance = 4.0D;
 
@@ -385,6 +395,11 @@ public final class PingShieldConfig {
         potionLock = c.getBoolean("freeze.potion-lock", true);
         noCollision = c.getBoolean("freeze.no-collision", true);
         freezeAllowVertical = c.getBoolean("freeze.allow-vertical-movement", false);
+        keepGliding = c.getBoolean("freeze.keep-gliding", true);
+        preventFlyingKick = c.getBoolean("freeze.prevent-flying-kick", true);
+        keepAir = c.getBoolean("freeze.keep-air", true);
+        escapeSuffocation = c.getBoolean("release.safety.escape-suffocation", true);
+        escapeSearchBlocks = c.getInt("release.safety.escape-search-blocks", 8);
         teleportBack = c.getBoolean("freeze.teleport-back.enabled", true);
         teleportBackTolerance = c.getDouble("freeze.teleport-back.tolerance-blocks", 4.0D);
 
@@ -792,6 +807,31 @@ public final class PingShieldConfig {
             warnings.add("freeze.mode = PASSIVE: скорость ходьбы обнуляется (это видно только по движению), "
                     + "игрок остаётся в своём GameMode. Так и должно быть по задумке — бессмертие даёт "
                     + "freeze.invulnerable-flag, а не креатив.");
+        }
+        if (!preventFlyingKick) {
+            warnings.add("freeze.prevent-flying-kick = false: игрока, замороженного в воздухе "
+                    + "(падение или элитры), сервер отключит через 4 секунды с сообщением "
+                    + "«Flying is not enabled on this server» — он считает такое зависание полётом "
+                    + "без права полёта. Включайте только осознанно.");
+        }
+        if (!keepAir) {
+            warnings.add("freeze.keep-air = false: замороженный под водой игрок теряет воздух "
+                    + "(пузырьки, звук захлёбывания), а после снятия защиты всплывает уже мёртвым. "
+                    + "Урон при этом всё равно отменяется — но выглядит это как «защита убила».");
+        }
+        if (escapeSearchBlocks < 1 || escapeSearchBlocks > 64) {
+            warnings.add("release.safety.escape-search-blocks = " + escapeSearchBlocks
+                    + " вне разумных границ (1..64) — беру 8.");
+            escapeSearchBlocks = 8;
+        }
+        if (!escapeSuffocation) {
+            warnings.add("release.safety.escape-suffocation = false: игрок, засыпанный песком или "
+                    + "гравием, будет отпущен внутри блока и задохнётся сразу после снятия защиты.");
+        }
+        if (!keepGliding) {
+            warnings.add("freeze.keep-gliding = false: при заморозке элитры сворачиваются. Игрок "
+                    + "теряет глайд (после разморозки падает) и попадает под серверную проверку "
+                    + "зависания — от неё спасает только freeze.prevent-flying-kick.");
         }
         if (freezeAllowVertical && teleportBack) {
             warnings.add("freeze.allow-vertical-movement = true: по вертикали якорь не удерживается, "

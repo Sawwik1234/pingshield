@@ -8,6 +8,9 @@ import net.kyori.adventure.bossbar.BossBar;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.block.Block;
+import org.bukkit.util.BoundingBox;
 import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.entity.Player;
@@ -761,6 +764,9 @@ public final class ProtectionManager {
                     if (!protection.isImmunityOnly() && holdInDanger(player, protection, now)) {
                         return; // пинг в норме, но отпускать сейчас — верная смерть
                     }
+                    if (!protection.isImmunityOnly() && blockedBySuffocation(player)) {
+                        return; // засыпан песком/гравием: сначала надо выпустить, иначе смерть сразу после снятия
+                    }
                     end(player, protection, reason);
                 });
                 return;
@@ -1199,15 +1205,23 @@ public final class ProtectionManager {
             return;
         }
 
-        switch (protection.effectiveFreezeMode(cfg.freezeMode)) {
+        PingShieldConfig.FreezeMode mode = protection.effectiveFreezeMode(cfg.freezeMode);
+
+        // ЭЛИТРЫ. Раньше здесь было безусловное setGliding(false) — и это была половина причины
+        // кика «Flying is not enabled on this server»: свернув элитры, плагин сам включал
+        // серверную проверку зависания для игрока в воздухе (условие !isFallFlying). Теперь глайд
+        // сохраняется (кроме режима FLY, где игрока намеренно переводят в полёт) — см. FlightGuard.
+        if (FlightGuard.shouldClearGliding(cfg.keepGliding, mode == PingShieldConfig.FreezeMode.FLY,
+                player.isGliding())) {
+            player.setGliding(false);
+        }
+
+        switch (mode) {
             case PASSIVE -> {
                 // Никакого полёта и никакого GM1: остаёмся в своём режиме игры.
                 stopMovementInput(player);
                 if (cfg.ejectFromVehicles && player.isInsideVehicle()) {
                     player.leaveVehicle();
-                }
-                if (player.isGliding()) {
-                    player.setGliding(false);
                 }
             }
             case TELEPORT -> {
@@ -1215,17 +1229,11 @@ public final class ProtectionManager {
                 if (cfg.ejectFromVehicles && player.isInsideVehicle()) {
                     player.leaveVehicle();
                 }
-                if (player.isGliding()) {
-                    player.setGliding(false);
-                }
             }
             case FLY -> {
                 // Единственный режим, где используется полёт (и только он может выглядеть как GM1).
                 if (cfg.ejectFromVehicles && player.isInsideVehicle()) {
                     player.leaveVehicle();
-                }
-                if (player.isGliding()) {
-                    player.setGliding(false);
                 }
                 if (Math.abs(player.getWalkSpeed()) > 0.0001F) {
                     player.setWalkSpeed(0.0F);
@@ -1246,6 +1254,147 @@ public final class ProtectionManager {
         if (cfg.potionLock && cfg.freezeMode != PingShieldConfig.FreezeMode.TELEPORT) {
             // Дополнительный слой фиксации: если другой плагин сбросит walk-speed, Slowness 250 держит.
             applyEffect(player, protection, PotionEffectType.SLOWNESS, 60, 250);
+        }
+
+        holdAgainstFlyingKick(player, protection);
+        keepAirSupply(player);
+    }
+
+    /**
+     * Пока игрок заморожен, он не может всплыть — поэтому запас воздуха держим полным.
+     * Иначе клиент показывает пустеющие пузырьки, играет звук захлёбывания, а после разморозки
+     * игрок всплывает уже мёртвым (в защите он не мог ничего сделать). См. {@link EnvironmentGuard}.
+     */
+    private void keepAirSupply(Player player) {
+        try {
+            int max = player.getMaximumAir();
+            if (EnvironmentGuard.shouldRefillAir(cfg.keepAir, player.getRemainingAir(), max)) {
+                player.setRemainingAir(max);
+            }
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.FINE, "Не удалось поправить запас воздуха", throwable);
+        }
+    }
+
+    /**
+     * Игрок засыпан песком/гравием (или замурован) — отпускать нельзя: вне защиты он сразу
+     * начнёт задыхаться, а выкопаться, пока действует заморозка, не может.
+     * Пытаемся выпустить его вверх; если места нет — держим защиту (до {@code max-protection-seconds}).
+     */
+    private boolean blockedBySuffocation(Player player) {
+        if (!cfg.escapeSuffocation) {
+            return false;
+        }
+        Location feet = player.getLocation();
+        World world = feet.getWorld();
+        int x = feet.getBlockX();
+        int z = feet.getBlockZ();
+        int y = feet.getBlockY();
+        if (!EnvironmentGuard.isBuried(column(world, x, z), y)) {
+            return false;
+        }
+        int escapeY = EnvironmentGuard.findEscapeY(y, cfg.escapeSearchBlocks, column(world, x, z));
+        if (escapeY == EnvironmentGuard.NOT_FOUND) {
+            audit.write(player.getName(), "RELEASE_BLOCKED_BURIED",
+                    "игрок внутри блока, свободного места в пределах " + cfg.escapeSearchBlocks
+                            + " блоков вверх нет — защита удержана");
+            return true;
+        }
+        if (escapeY == y) {
+            return false; // не засыпан (гонка между проверкой и поиском) — отпускаем как обычно
+        }
+        Location target = new Location(world, feet.getX(), escapeY, feet.getZ(),
+                feet.getYaw(), feet.getPitch());
+        markSelfTeleport(player.getUniqueId());
+        try {
+            player.teleportAsync(target);
+            audit.write(player.getName(), "RELEASE_ESCAPE_BLOCK",
+                    "выпущен из блока: подъём с Y=" + y + " на Y=" + escapeY
+                            + " (иначе задохнулся бы сразу после снятия защиты)");
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.FINE, "Не удалось выпустить игрока из блока", throwable);
+            return true; // не рискуем: остаёмся в защите
+        }
+        return false;
+    }
+
+    /** Колонка блоков вокруг игрока для {@link EnvironmentGuard} (публичный API, без NMS). */
+    private EnvironmentGuard.Column column(World world, int x, int z) {
+        int minHeight = world.getMinHeight();
+        int maxHeight = world.getMaxHeight();
+        return y -> {
+            if (y <= minHeight || y >= maxHeight) {
+                return false; // за границами мира стоять нельзя
+            }
+            return passable(world, x, y, z) && passable(world, x, y + 1, z);
+        };
+    }
+
+    /**
+     * Свободно ли для игрока: воздух, вода, ковёр, слой снега, трава — да; песок, гравий, камень,
+     * стекло — нет. Проверка строгая (нужен полный куб), иначе игрок «застревал» бы в ковре.
+     */
+    private boolean passable(World world, int x, int y, int z) {
+        try {
+            Block block = world.getBlockAt(x, y, z);
+            BoundingBox box = block.getBoundingBox();
+            boolean fullCube = box.getWidthX() >= 0.99D && box.getHeight() >= 0.99D
+                    && box.getWidthZ() >= 0.99D;
+            return !EnvironmentGuard.suffocating(block.getType().isSolid(), fullCube,
+                    block.getType().name());
+        } catch (Throwable throwable) {
+            return false; // не смогли проверить — считаем блоком и не отпускаем вслепую
+        }
+    }
+
+    /**
+     * Держит замороженного игрока «легальным» для серверной проверки зависания.
+     *
+     * <p>Сервер ({@code ServerGamePacketListenerImpl#tickPlayer}) считает игрока в воздухе без права
+     * полёта «зависшим» и через 80 тиков (4 с) кикает с причиной FLYING_PLAYER. Пока игрок
+     * заморожен, он как раз висит — поэтому включаем mayfly: это единственная ветка того условия,
+     * которую можно переключить публичным API, не меняя игровой режим и не выдавая полёт по факту
+     * (движение отменяется, а PlayerToggleFlightEvent блокируется слушателем). На разморозке
+     * значение возвращается таким, каким было до защиты.</p>
+     */
+    private void holdAgainstFlyingKick(Player player, Protection protection) {
+        if (player.getGameMode() == GameMode.SPECTATOR) {
+            return;
+        }
+        boolean airborne = !player.isOnGround() || player.isGliding();
+        if (!FlightGuard.needsAllowFlight(cfg.preventFlyingKick, false, airborne, player.getAllowFlight())) {
+            return;
+        }
+        try {
+            player.setAllowFlight(true);
+            protection.setForcedFlight(true);
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.FINE, "Не удалось удержать mayfly для игрока в воздухе", throwable);
+        }
+    }
+
+    /**
+     * Сервер попытался кикнуть игрока за «зависание» (FLYING_PLAYER / FLYING_VEHICLE).
+     * Слушатель такую попытку отменяет (сервер уважает отмену PlayerKickEvent и не отключает
+     * игрока), а здесь добиваем причину: если mayfly почему-то слетел (другой плагин), включаем
+     * снова и пишем в audit.log один раз на одну защиту.
+     */
+    public void handleFlyingKickPrevented(Player player) {
+        Protection protection = active.get(player.getUniqueId());
+        if (protection == null) {
+            return;
+        }
+        if (player.getGameMode() != GameMode.SPECTATOR && !player.getAllowFlight()) {
+            try {
+                player.setAllowFlight(true);
+                protection.setForcedFlight(true);
+            } catch (Throwable ignored) {
+                // не критично: кик уже отменён, а следующий цикл попробует снова
+            }
+        }
+        if (protection.markFlyingKickNoted()) {
+            audit.write(player.getName(), "FLYING_KICK_PREVENTED",
+                    "сервер пытался кикнуть за зависание в воздухе — защита удержала игрока");
         }
     }
 
@@ -1302,6 +1451,16 @@ public final class ProtectionManager {
                             player.setFlying(false);
                             player.setAllowFlight(protection.hadAllowFlight());
                         }
+                    } else if (protection.forcedFlight()) {
+                        // Мы держали mayfly, чтобы сервер не кикнул за зависание, — возвращаем как было.
+                        player.setFlying(false);
+                        player.setAllowFlight(protection.hadAllowFlight());
+                        protection.setForcedFlight(false);
+                    }
+                    // Элитры: если игрока заморозили в глайде, вернуть глайд — иначе он в первый же
+                    // момент после разморозки начнёт падать (сервер сам глайд не восстанавливает).
+                    if (protection.hadGliding() && !player.isGliding() && !player.isOnGround()) {
+                        player.setGliding(true);
                     }
                     if (mode != PingShieldConfig.FreezeMode.TELEPORT) {
                         player.setFlySpeed(protection.getPrevFlySpeed());
@@ -1315,6 +1474,15 @@ public final class ProtectionManager {
                 if (cfg.restoreFood) {
                     player.setFoodLevel(protection.hadFoodLevel());
                     player.setSaturation(protection.hadSaturation());
+                }
+            }
+            // Воздух: пока игрок был заморожен, он не мог всплыть — отдаём полный запас,
+            // иначе он задохнётся в первую же секунду после снятия защиты (см. EnvironmentGuard).
+            if (cfg.keepAir) {
+                int max = player.getMaximumAir();
+                int air = EnvironmentGuard.airAfterFreeze(true, player.getRemainingAir(), max);
+                if (air != player.getRemainingAir()) {
+                    player.setRemainingAir(air);
                 }
             }
             for (PotionEffectType type : new ArrayList<>(protection.getAppliedEffects())) {

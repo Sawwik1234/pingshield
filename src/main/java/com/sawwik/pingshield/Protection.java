@@ -50,6 +50,9 @@ public final class Protection {
     // Снимок состояния игрока до заморозки — чтобы вернуть ровно как было
     private boolean hadAllowFlight;
     private boolean hadFlying;
+    private boolean hadGliding;
+    private boolean forcedFlight;
+    private volatile boolean flyingKickNoted;
     private boolean hadCollidable = true;
     private boolean hadInvulnerable;
     private int hadFoodLevel = 20;
@@ -254,6 +257,7 @@ public final class Protection {
     public void captureSnapshot(Player player) {
         this.hadAllowFlight = player.getAllowFlight();
         this.hadFlying = player.isFlying();
+        this.hadGliding = player.isGliding();
         this.hadCollidable = player.isCollidable();
         this.hadInvulnerable = player.isInvulnerable();
         this.hadFoodLevel = player.getFoodLevel();
@@ -274,6 +278,25 @@ public final class Protection {
 
     public boolean hadFlying() {
         return hadFlying;
+    }
+
+    /** Был ли игрок в глайде (элитры) на момент постановки защиты. */
+    public boolean hadGliding() {
+        return hadGliding;
+    }
+
+    /** true, если плагин сам включил mayfly, чтобы сервер не кикнул за зависание (см. FlightGuard). */
+    public boolean forcedFlight() {
+        return forcedFlight;
+    }
+
+    public void setForcedFlight(boolean value) {
+        this.forcedFlight = value;
+    }
+
+    /** Запись в audit.log о предотвращённом кике делается один раз на одну защиту. */
+    public boolean markFlyingKickNoted() {
+        return !flyingKickNoted && (flyingKickNoted = true);
     }
 
     public boolean hadCollidable() {

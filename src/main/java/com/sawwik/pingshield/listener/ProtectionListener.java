@@ -35,6 +35,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
+import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
@@ -43,6 +44,7 @@ import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerToggleFlightEvent;
 import org.bukkit.event.player.PlayerVelocityEvent;
 import org.bukkit.inventory.InventoryHolder;
+import com.sawwik.pingshield.FlightGuard;
 import com.sawwik.pingshield.PingShieldConfig;
 import com.sawwik.pingshield.PingShieldPlugin;
 import com.sawwik.pingshield.ProtectionManager;
@@ -115,17 +117,39 @@ public final class ProtectionListener implements Listener {
     }
 
     /**
-     * Игрок может сам выключить полёт (двойной пробел) — и начнёт падать,
-     * пока защита ещё активна. Запрещаем.
+     * Смену режима полёта замороженному игроку запрещаем во всех режимах заморозки, а не только
+     * в FLY: пока игрок под защитой, плагин держит mayfly, чтобы сервер не кикнул его за
+     * «зависание в воздухе» (см. FlightGuard), и сам игрок этим правом пользоваться не должен —
+     * он вообще ничего не делает, а включённый полёт сломал бы удержание на месте.
      */
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onToggleFlight(PlayerToggleFlightEvent event) {
-        if (cfg.freezeMode != PingShieldConfig.FreezeMode.FLY) {
-            return;
-        }
         if (manager.isFrozen(event.getPlayer())) {
             event.setCancelled(true);
         }
+    }
+
+    /**
+     * Последняя линия обороны от кика «Flying is not enabled on this server».
+     *
+     * <p>Сервер сам отключает игрока, который «висит» в воздухе без права полёта: причина
+     * FLYING_PLAYER (или FLYING_VEHICLE — то же для транспорта), счётчик 80 тиков = 4 секунды.
+     * Замороженный в воздухе игрок (падение или элитры) попадал под это правило. Пока игрок под
+     * защитой — отменяем кик и возвращаем состояние в порядок; сервер уважает отмену
+     * ({@code ServerCommonPacketListenerImpl#disconnect} проверяет {@code event.isCancelled()}
+     * и просто выходит, не отключая игрока).</p>
+     */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onKick(PlayerKickEvent event) {
+        if (!cfg.preventFlyingKick || !FlightGuard.isFlyingKick(event.getCause())) {
+            return;
+        }
+        Player player = event.getPlayer();
+        if (!manager.isProtected(player)) {
+            return;
+        }
+        event.setCancelled(true);
+        manager.handleFlyingKickPrevented(player);
     }
 
     /**
