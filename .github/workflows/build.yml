@@ -106,6 +106,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Нужен checkout: шаг «Release notes from CHANGELOG» читает CHANGELOG.md и scripts/release-notes.py.
+      # Без него задача падала с «No such file or directory» (на теге v1.6.5 релиз пришлось приложить вручную).
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download built JAR
         uses: actions/download-artifact@v4
         with:
