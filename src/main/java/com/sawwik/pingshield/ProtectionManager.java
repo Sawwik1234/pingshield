@@ -873,32 +873,67 @@ public final class ProtectionManager {
         }
     }
 
-    /** Вход игрока: если осталась расписка — вернуть записанные значения и убрать её. */
-    private void repairStuckState(Player player) {
+    /**
+     * Вход игрока: если осталась расписка — вернуть записанные значения и убрать её.
+     *
+     * <p>Порядок критичен и вынесен в {@link StuckStateRepair}: маркер удаляется <b>только после</b>
+     * успешного применения. Раньше он удалялся сразу — и падение {@link #applyStuckState} (например,
+     * чужой плагин бросает исключение из обработчика события) оставляло игрока с испорченным
+     * состоянием и без единственной копии «как было». Теперь при провале расписка остаётся,
+     * в лог идёт предупреждение, и делается одна отложенная повторная попытка.</p>
+     */
+    private void repairStuckState(Player player, boolean allowRetry) {
         try {
             var container = player.getPersistentDataContainer();
             String raw = container.get(stuckStateKey, PersistentDataType.STRING);
-            if (raw == null) {
-                return;
+
+            StuckStateRepair.Result result = StuckStateRepair.run(raw, marker -> applyStuckState(player, marker));
+            if (result.mayClearMarker()) {
+                container.remove(stuckStateKey);
             }
-            container.remove(stuckStateKey);
-            StuckStateMarker marker = StuckStateMarker.decode(raw);
-            if (marker == null) {
-                plugin.getLogger().warning("PingShield: у игрока " + player.getName()
+
+            switch (result.outcome()) {
+                case NO_MARKER -> {
+                    // штатный вход: игрок вышел, когда защиты не было
+                }
+                case BROKEN -> plugin.getLogger().warning("PingShield: у игрока " + player.getName()
                         + " найден повреждённый маркер заморозки — состояние не меняю, маркер убран");
-                return;
+                case APPLIED -> {
+                    StuckStateMarker marker = result.marker();
+                    plugin.getLogger().warning("PingShield: игрок " + player.getName()
+                            + " был заморожен в момент выхода — состояние возвращено (неуязвимость="
+                            + marker.invulnerable() + ", скорость ходьбы=" + marker.walkSpeed()
+                            + ", скорость полёта=" + marker.flySpeed() + ")");
+                    audit.write(player.getName(), "STATE_REPAIR_ON_JOIN",
+                            "восстановлено состояние прошлой сессии: inv=" + marker.invulnerable()
+                                    + " walk=" + marker.walkSpeed() + " fly=" + marker.flySpeed());
+                }
+                case FAILED -> {
+                    plugin.getLogger().log(Level.WARNING, "PingShield: не удалось вернуть состояние игроку "
+                            + player.getName() + " — маркер оставлен, повторим позже", result.error());
+                    retryStuckStateRepair(player, allowRetry);
+                }
             }
-            applyStuckState(player, marker);
-            plugin.getLogger().warning("PingShield: игрок " + player.getName()
-                    + " был заморожен в момент выхода — состояние возвращено (неуязвимость="
-                    + marker.invulnerable() + ", скорость ходьбы=" + marker.walkSpeed()
-                    + ", скорость полёта=" + marker.flySpeed() + ")");
-            audit.write(player.getName(), "STATE_REPAIR_ON_JOIN",
-                    "восстановлено состояние прошлой сессии: inv=" + marker.invulnerable()
-                            + " walk=" + marker.walkSpeed() + " fly=" + marker.flySpeed());
         } catch (Throwable throwable) {
             plugin.getLogger().log(Level.WARNING, "Не удалось восстановить состояние игрока "
                     + player.getName() + " при входе", throwable);
+        }
+    }
+
+    /**
+     * Одна отложенная повторная попытка (через 2 секунды). Ограничена одним повтором за вход,
+     * чтобы конфликт с чужим плагином не превратился в бесконечный цикл.
+     */
+    private void retryStuckStateRepair(Player player, boolean allowRetry) {
+        if (!allowRetry) {
+            return;
+        }
+        try {
+            player.getScheduler().runDelayed(plugin, task -> repairStuckState(player, false), null, 40L);
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.FINE,
+                    "Повторная попытка восстановления состояния не поставлена для " + player.getName(),
+                    throwable);
         }
     }
 
@@ -2020,7 +2055,7 @@ public final class ProtectionManager {
         detectProxy(player);
         // Прошлая сессия закончилась, не сняв защиту (краш, /reload, жёсткое выключение,
         // версии до 1.6.5): расписка в данных игрока возвращает состояние до заморозки.
-        repairStuckState(player);
+        repairStuckState(player, true);
         UUID id = player.getUniqueId();
         PingState state = new PingState();
         state.joinAt = System.currentTimeMillis();
