@@ -83,7 +83,7 @@ for run in runs:
 done
 [ -n "$RUN_ID" ] || die "запуск CI для тега v$VERSION не появился за 25 минут"
 
-info "Запуск #$RUN_ID: жду завершения (сборка + 78 тестов + smoke на настоящей Folia)…"
+info "Запуск #$RUN_ID: жду завершения (сборка + тесты + smoke на настоящей Folia)…"
 STATUS=""; CONCLUSION=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     read -r STATUS CONCLUSION <<<"$(api_get "$API/repos/$REPO/actions/runs/$RUN_ID" | python3 -c '
@@ -123,7 +123,7 @@ GOT_BYTES="$(stat -c%s "$TMP/release.jar")"
 GOT_SHA="$(sha256sum "$TMP/release.jar" | cut -d' ' -f1)"
 
 echo
-green "════════════════ ПУБЛИКАЦИЯ 1.6.4 ЗАВЕРШЕНА ════════════════"
+green "════════════════ ПУБЛИКАЦИЯ $VERSION ЗАВЕРШЕНА ════════════════"
 echo "  Коммит:   $(git rev-parse --short HEAD)   тег: v$VERSION"
 echo "  Релиз:    https://github.com/$REPO/releases/tag/v$VERSION"
 echo "  JAR:      $GOT_BYTES байт (ожидалось $EXPECT_BYTES)"
