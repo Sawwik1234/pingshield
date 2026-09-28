@@ -68,8 +68,8 @@ DEADLINE=$(( $(date +%s) + 1500 ))
 RUN_ID=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     RUN_ID="$(api_get "$API/repos/$REPO/actions/runs?event=push&per_page=40" | python3 -c '
-import sys, json, os
-want = "v" + os.environ.get("VERSION", "1.6.4")
+import sys, json
+want = "v" + sys.argv[1]
 try:
     runs = json.load(sys.stdin).get("workflow_runs", [])
 except Exception:
@@ -77,13 +77,13 @@ except Exception:
 for run in runs:
     if run.get("head_branch") == want:
         print(run["id"]); break
-' VERSION="$VERSION")"
+' "$VERSION")"
     [ -n "$RUN_ID" ] && break
     sleep 15
 done
 [ -n "$RUN_ID" ] || die "запуск CI для тега v$VERSION не появился за 25 минут"
 
-info "Запуск #$RUN_ID: жду завершения (сборка + 72 теста + smoke на настоящей Folia)…"
+info "Запуск #$RUN_ID: жду завершения (сборка + 78 тестов + smoke на настоящей Folia)…"
 STATUS=""; CONCLUSION=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     read -r STATUS CONCLUSION <<<"$(api_get "$API/repos/$REPO/actions/runs/$RUN_ID" | python3 -c '
@@ -105,8 +105,8 @@ green "CI успешен: $URL"
 # ------------------------------------------------------------------ проверка релиза
 info "Проверяю релиз v$VERSION…"
 ASSET_URL="$(api_get "$API/repos/$REPO/releases/tags/v$VERSION" | python3 -c '
-import sys, json, os
-want = "PingShield-" + os.environ.get("VERSION", "1.6.4") + ".jar"
+import sys, json
+want = "PingShield-" + sys.argv[1] + ".jar"
 try:
     assets = json.load(sys.stdin).get("assets", [])
 except Exception:
@@ -114,7 +114,7 @@ except Exception:
 for asset in assets:
     if asset.get("name") == want:
         print(asset["browser_download_url"]); break
-' VERSION="$VERSION")"
+' "$VERSION")"
 [ -n "$ASSET_URL" ] || die "релиз v$VERSION не появился или в нём нет файла PingShield-$VERSION.jar"
 info "Релиз найден, скачиваю JAR и сверяю с собранным локально…"
 TMP="$(mktemp -d)"
