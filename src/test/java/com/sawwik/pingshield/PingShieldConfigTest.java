@@ -93,6 +93,8 @@ class PingShieldConfigTest {
         assertTrue(config.keepAir, "freeze.keep-air: замороженный под водой игрок не должен тонуть");
         assertTrue(config.escapeSuffocation, "release.safety.escape-suffocation: засыпанного песком выпускаем");
         assertEquals(8, config.escapeSearchBlocks, "release.safety.escape-search-blocks");
+        assertTrue(config.clearFreezeTicks, "freeze.clear-freeze-ticks: порошковый снег не должен ударить после снятия");
+        assertTrue(config.resetIdleTimer, "freeze.reset-idle-timer: замороженный не должен быть кикнут за простой");
     }
 
     @Test

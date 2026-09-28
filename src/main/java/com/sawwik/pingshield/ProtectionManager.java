@@ -799,6 +799,15 @@ public final class ProtectionManager {
         }
 
         if (!protection.isImmunityOnly()) {
+            // Игрок не может двигаться (движение отменяется) — сбрасываем таймер простоя,
+            // иначе сервер со включённым playerIdleTimeout отключит его с «idling».
+            if (cfg.resetIdleTimer) {
+                try {
+                    player.resetIdleDuration();
+                } catch (Throwable throwable) {
+                    plugin.getLogger().log(Level.FINE, "Не удалось сбросить таймер простоя", throwable);
+                }
+            }
             applyFreeze(player, protection);
             if (cfg.teleportBack && !isInAnchor(player.getLocation(), anchor)
                     && now - protection.getLastTeleportBackAt() >= 400L) {
@@ -1200,6 +1209,15 @@ public final class ProtectionManager {
         if (cfg.extinguishOnFreeze && player.getFireTicks() > 0) {
             player.setFireTicks(0);
         }
+        // Порошковый снег: урон от замерзания отменяется и так, но накопленное замерзание
+        // осталось бы и ударило сразу после снятия защиты (см. EnvironmentGuard).
+        try {
+            if (EnvironmentGuard.shouldClearFreezeTicks(cfg.clearFreezeTicks, player.getFreezeTicks())) {
+                player.setFreezeTicks(0);
+            }
+        } catch (Throwable ignored) {
+            // метод отсутствует на нестандартных форках — не критично
+        }
 
         if (player.getGameMode() == GameMode.SPECTATOR) {
             return;
@@ -1476,6 +1494,14 @@ public final class ProtectionManager {
                     player.setSaturation(protection.hadSaturation());
                 }
             }
+            // Замерзание: сбрасываем и на разморозке, чтобы не получить урон FREEZE в первую секунду.
+            try {
+                if (EnvironmentGuard.shouldClearFreezeTicks(cfg.clearFreezeTicks, player.getFreezeTicks())) {
+                    player.setFreezeTicks(0);
+                }
+            } catch (Throwable ignored) {
+                // не критично
+            }
             // Воздух: пока игрок был заморожен, он не мог всплыть — отдаём полный запас,
             // иначе он задохнётся в первую же секунду после снятия защиты (см. EnvironmentGuard).
             if (cfg.keepAir) {
@@ -1621,6 +1647,14 @@ public final class ProtectionManager {
             }
             if (player.getFireTicks() > 0) {
                 return true;
+            }
+            // Опасные эффекты: урон от них отменяется, пока игрок под защитой, но накопленный
+            // эффект никуда не девается — отпустить сейчас значит дать ему ударить сразу после
+            // разморозки (настраивается в release.safety.hold-effects, по умолчанию WITHER).
+            for (PotionEffectType type : cfg.holdEffectTypes) {
+                if (player.hasPotionEffect(type)) {
+                    return true;
+                }
             }
             if (player.getRemainingAir() < player.getMaximumAir() * 0.5F
                     && player.getEyeLocation().getBlock().isLiquid()) {

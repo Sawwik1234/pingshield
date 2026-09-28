@@ -156,6 +156,12 @@ public final class PingShieldConfig {
     public boolean escapeSuffocation = true;
     /** На сколько блоков вверх искать свободное место при выталкивании из блока. */
     public int escapeSearchBlocks = 8;
+    /** Сбрасывать накопленное замерзание (порошковый снег), пока игрок заморожен. */
+    public boolean clearFreezeTicks = true;
+    /** Продлевать заморозку, пока на игроке опасный эффект (например, Wither) — иначе смерть сразу после снятия. */
+    public Set<PotionEffectType> holdEffectTypes = new LinkedHashSet<>();
+    /** Сбрасывать таймер простоя, пока игрок заморожен (иначе сервер кикнет за «idling»). */
+    public boolean resetIdleTimer = true;
     public boolean teleportBack = true;
     public double teleportBackTolerance = 4.0D;
 
@@ -400,6 +406,9 @@ public final class PingShieldConfig {
         keepAir = c.getBoolean("freeze.keep-air", true);
         escapeSuffocation = c.getBoolean("release.safety.escape-suffocation", true);
         escapeSearchBlocks = c.getInt("release.safety.escape-search-blocks", 8);
+        clearFreezeTicks = c.getBoolean("freeze.clear-freeze-ticks", true);
+        resetIdleTimer = c.getBoolean("freeze.reset-idle-timer", true);
+        holdEffectTypes = parseEffects(c.getStringList("release.safety.hold-effects"));
         teleportBack = c.getBoolean("freeze.teleport-back.enabled", true);
         teleportBackTolerance = c.getDouble("freeze.teleport-back.tolerance-blocks", 4.0D);
 
@@ -823,6 +832,10 @@ public final class PingShieldConfig {
             warnings.add("release.safety.escape-search-blocks = " + escapeSearchBlocks
                     + " вне разумных границ (1..64) — беру 8.");
             escapeSearchBlocks = 8;
+        }
+        if (!clearFreezeTicks) {
+            warnings.add("freeze.clear-freeze-ticks = false: замороженный в порошковом снеге игрок "
+                    + "продолжает замерзать, а после снятия защиты сразу получает урон от FREEZE.");
         }
         if (!escapeSuffocation) {
             warnings.add("release.safety.escape-suffocation = false: игрок, засыпанный песком или "

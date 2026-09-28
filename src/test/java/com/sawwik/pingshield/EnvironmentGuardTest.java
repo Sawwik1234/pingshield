@@ -100,6 +100,17 @@ class EnvironmentGuardTest {
         assertFalse(EnvironmentGuard.suffocating(true, true, null), "неизвестный материал — не рискуем поднимать");
     }
 
+    // ---------------------------------------------------------------- замерзание
+
+    @Test
+    @DisplayName("порошковый снег: накопленное замерзание сбрасывается — иначе урон FREEZE сразу после снятия")
+    void freezeTicksCleared() {
+        assertTrue(EnvironmentGuard.shouldClearFreezeTicks(true, 140), "140 тиков — уже почти урон");
+        assertTrue(EnvironmentGuard.shouldClearFreezeTicks(true, 1));
+        assertFalse(EnvironmentGuard.shouldClearFreezeTicks(true, 0), "нечего сбрасывать");
+        assertFalse(EnvironmentGuard.shouldClearFreezeTicks(false, 200), "настройка выключена — старое поведение");
+    }
+
     // ---------------------------------------------------------------- воздух
 
     @Test
