@@ -900,13 +900,16 @@ public final class ProtectionManager {
                         + " найден повреждённый маркер заморозки — состояние не меняю, маркер убран");
                 case APPLIED -> {
                     StuckStateMarker marker = result.marker();
-                    plugin.getLogger().warning("PingShield: игрок " + player.getName()
-                            + " был заморожен в момент выхода — состояние возвращено (неуязвимость="
+                    plugin.getLogger().warning("PingShield: у игрока " + player.getName()
+                            + " заморозка не была снята (выход, выключение или краш) — состояние возвращено (неуязвимость="
                             + marker.invulnerable() + ", скорость ходьбы=" + marker.walkSpeed()
                             + ", скорость полёта=" + marker.flySpeed() + ")");
                     audit.write(player.getName(), "STATE_REPAIR_ON_JOIN",
                             "восстановлено состояние прошлой сессии: inv=" + marker.invulnerable()
                                     + " walk=" + marker.walkSpeed() + " fly=" + marker.flySpeed());
+                    // Маркер в CoreProtect: при разборе «что было с игроком» видно и это.
+                    coreProtect.logMarker(player, CoreProtectHook.Kind.END,
+                            "состояние после аварийной заморозки восстановлено при входе");
                 }
                 case FAILED -> {
                     plugin.getLogger().log(Level.WARNING, "PingShield: не удалось вернуть состояние игроку "
@@ -958,7 +961,7 @@ public final class ProtectionManager {
     private void restoreStateOnQuit(Player player, Protection protection) {
         try {
             if (!protection.isImmunityOnly()) {
-                releaseFreeze(player, protection); // внутри же убирается расписка
+                releaseFreeze(player, protection, true); // внутри же убирается расписка
             } else {
                 clearStuckMarker(player); // у щита без заморозки сущность не менялась
             }
@@ -1693,6 +1696,16 @@ public final class ProtectionManager {
 
     /** Выполняется в регионе игрока: возврат ровно в то состояние, что было до защиты. */
     private void releaseFreeze(Player player, Protection protection) {
+        releaseFreeze(player, protection, false);
+    }
+
+    /**
+     * Возврат состояния. {@code quiet = true} — путь выхода игрока: игрок уже уходит, поэтому
+     * <b>не</b> выдаём эффекты «мягкой посадки» (они сохранились бы в playerdata, и вернувшийся
+     * в течение трёх секунд игрок получил бы Slow Falling с Fire Resistance «в наследство»)
+     * и не трогаем индикатор (пакеты уходящему игроку бессмысленны).
+     */
+    private void releaseFreeze(Player player, Protection protection, boolean quiet) {
         try {
             if (!protection.isImmunityOnly()) {
                 if (cfg.invulnerableFlag) {
@@ -1755,8 +1768,10 @@ public final class ProtectionManager {
             }
             protection.getAppliedEffects().clear();
 
-            hideIndicator(player, protection);
-            applyReleaseEffects(player);
+            if (!quiet) {
+                hideIndicator(player, protection);
+                applyReleaseEffects(player);
+            }
             // Состояние возвращено — расписка больше не нужна.
             clearStuckMarker(player);
         } catch (Throwable throwable) {

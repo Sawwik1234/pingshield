@@ -96,20 +96,36 @@ public final class PingShieldLoadTest {
         System.out.printf("  замер живой кучи на %,d состояниях: %s%n", 50_000, heapProbe(50_000));
 
         // ---- вклад в тик ----
-        double worstMicros = Math.max(calm.microsPerCycle(),
+        double worstMedian = Math.max(calm.medianMicrosPerCycle(),
+                Math.max(spike.medianMicrosPerCycle(), mixed.medianMicrosPerCycle()));
+        double worstBest = Math.max(calm.microsPerCycle(),
                 Math.max(spike.microsPerCycle(), mixed.microsPerCycle()));
         System.out.printf("%nИтог для %,d игроков:%n", players);
-        System.out.printf("  самый тяжёлый сценарий: %.1f мкс на цикл (%.2f %% одного тика из 50 мс)%n",
-                worstMicros, worstMicros * 1000.0D / TICK_NANOS * 100.0D);
-        System.out.printf("  за минуту работы: %.2f мс суммарно%n", worstMicros * cycles / 1000.0D);
-        System.out.printf("  на игрока: %.0f нс за цикл%n", worstMicros * 1000.0D / players);
+        System.out.printf("  самый тяжёлый сценарий (медиана): %.1f мкс на цикл (%.2f %% одного тика из 50 мс)%n",
+                worstMedian, worstMedian * 1000.0D / TICK_NANOS * 100.0D);
+        System.out.printf("  он же без помех (лучший прогон): %.1f мкс на цикл (%.2f %%)%n",
+                worstBest, worstBest * 1000.0D / TICK_NANOS * 100.0D);
+        System.out.printf("  за минуту работы: %.2f мс суммарно%n", worstMedian * cycles / 1000.0D);
+        System.out.printf("  на игрока: %.0f нс за цикл%n", worstMedian * 1000.0D / players);
     }
 
     // ------------------------------------------------------------------ измеритель
 
-    private record Result(double nanosPerCycle, double nanosPerPlayer) {
+    /**
+     * Замер одного сценария.
+     *
+     * <p>{@code nanosPerCycle} — лучший прогон (минимум по раундам: так видно «чистое» время без
+     * помех), {@code medianNanosPerCycle} — медиана по раундам. Медиана добавлена потому, что
+     * в shared-окружении (ноутбук, CI, тесная виртуалка) лучший прогон сильно плавает: чужой
+     * процесс на соседнем ядре задирает минимум, и «регрессия» мерещится там, где её нет.</p>
+     */
+    private record Result(double nanosPerCycle, double medianNanosPerCycle, double nanosPerPlayer) {
         double microsPerCycle() {
             return nanosPerCycle / 1000.0D;
+        }
+
+        double medianMicrosPerCycle() {
+            return medianNanosPerCycle / 1000.0D;
         }
     }
 
@@ -121,15 +137,19 @@ public final class PingShieldLoadTest {
                                   NetworkMonitor monitor, PingShieldConfig cfg, int[] pings,
                                   int cycles) {
         long best = Long.MAX_VALUE;
-        for (int round = 0; round < 3; round++) {
+        double[] rounds = new double[5];
+        for (int round = 0; round < rounds.length; round++) {
             long start = System.nanoTime();
             for (int c = 0; c < cycles; c++) {
                 oneCycle(states, ids, ordered, monitor, cfg, pings, c, true);
             }
             long elapsed = System.nanoTime() - start;
+            rounds[round] = (double) elapsed / cycles;
             best = Math.min(best, elapsed / cycles);
         }
-        return new Result(best, (double) best / Math.max(1, pings.length));
+        java.util.Arrays.sort(rounds);
+        double median = rounds[rounds.length / 2];
+        return new Result(best, median, median / Math.max(1, pings.length));
     }
 
     private static void oneCycle(Map<UUID, PingState> states, List<UUID> ids, List<PingState> ordered,
@@ -171,11 +191,12 @@ public final class PingShieldLoadTest {
 
     private static void print(String title, Result result, int players) {
         System.out.printf("%s%n", title);
-        System.out.printf("  на цикл: %.1f мкс | на игрока: %.0f нс | за 60 циклов: %.2f мс%n",
-                result.microsPerCycle(), result.nanosPerPlayer(),
+        System.out.printf("  на цикл: %.1f мкс (лучший) | медиана %.1f мкс | на игрока: %.0f нс | за 60 циклов: %.2f мс%n",
+                result.microsPerCycle(), result.medianMicrosPerCycle(), result.nanosPerPlayer(),
                 result.nanosPerCycle() * 60 / 1_000_000.0D);
-        System.out.printf("  доля тика (50 мс): %.3f %% %n",
-                result.nanosPerCycle() / TICK_NANOS * 100.0D);
+        System.out.printf("  доля тика (50 мс): %.3f %% (медиана %.3f %%)%n",
+                result.nanosPerCycle() / TICK_NANOS * 100.0D,
+                result.medianNanosPerCycle() / TICK_NANOS * 100.0D);
     }
 
     /**

@@ -4,7 +4,7 @@ plugins {
 
 group = "com.sawwik.pingshield"
 // Версия по умолчанию; можно переопределить при сборке: ./gradlew build -Pversion=1.7.0
-version = providers.gradleProperty("version").orElse("1.6.6").get()
+version = providers.gradleProperty("version").orElse("1.6.7").get()
 description = "Защита игроков с очень высоким пингом: заморозка движения и иммунитет к урону. Folia-ready."
 
 // ---------------------------------------------------------------------------
