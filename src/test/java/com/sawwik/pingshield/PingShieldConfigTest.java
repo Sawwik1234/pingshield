@@ -95,6 +95,7 @@ class PingShieldConfigTest {
         assertEquals(8, config.escapeSearchBlocks, "release.safety.escape-search-blocks");
         assertTrue(config.clearFreezeTicks, "freeze.clear-freeze-ticks: порошковый снег не должен ударить после снятия");
         assertTrue(config.resetIdleTimer, "freeze.reset-idle-timer: замороженный не должен быть кикнут за простой");
+        assertTrue(config.blockItemPickup, "interactions.block-item-pickup: подбор предметов по умолчанию блокируется");
     }
 
     @Test

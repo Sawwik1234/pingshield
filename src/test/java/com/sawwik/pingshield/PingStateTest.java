@@ -198,4 +198,29 @@ class PingStateTest {
         assertFalse(state.isBadPingNow(), "пока персональный порог не выставлен, игрока не трогаем");
         assertFalse(state.readyToEnter(1));
     }
+
+    // ---------------------------------------------------------------- персональные пороги
+
+    @Test
+    @DisplayName("пороги пересчитываются: пока не считались, при смене конфига, по истечении кэша")
+    void thresholdRefreshTriggers() {
+        PingState state = new PingState();
+        assertTrue(state.needsThresholdRefresh(1L, 1_000L, 30_000L),
+                "ещё ни разу не считали — надо посчитать");
+
+        state.enter = 3000;
+        state.exit = 2000;
+        state.thresholdsGeneration = 1L;
+        state.thresholdsCachedAt = 1_000L;
+
+        assertFalse(state.needsThresholdRefresh(1L, 5_000L, 30_000L), "кэш свежий — не трогаем");
+        assertTrue(state.needsThresholdRefresh(2L, 5_000L, 30_000L), "конфиг перезагружен — пересчитываем");
+        assertTrue(state.needsThresholdRefresh(1L, 40_000L, 30_000L), "кэш истёк");
+
+        // Задача пересчёта ставится в очередь региона только один раз
+        assertTrue(state.markThresholdsQueued(), "первый раз — ставим");
+        assertFalse(state.markThresholdsQueued(), "пока задача в очереди — повторно не ставим");
+        state.clearThresholdsQueued();
+        assertTrue(state.markThresholdsQueued(), "после выполнения — можно снова");
+    }
 }

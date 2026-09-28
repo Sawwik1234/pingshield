@@ -17,6 +17,8 @@ import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDamageEvent.DamageCause;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.PlayerAttemptPickupItemEvent;
 import org.bukkit.event.player.PlayerBedEnterEvent;
@@ -25,6 +27,7 @@ import org.bukkit.event.player.PlayerBucketEntityEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerEditBookEvent;
 import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerHarvestBlockEvent;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
@@ -161,10 +164,9 @@ public final class ProtectionListener implements Listener {
         if (!manager.isFrozen(event.getPlayer())) {
             return;
         }
-        if (cfg.freezeMode == PingShieldConfig.FreezeMode.FLY
-                && (event.getVelocity().getX() != 0.0D || event.getVelocity().getZ() != 0.0D)) {
-            event.setCancelled(true);
-        } else if (event.getVelocity().lengthSquared() > 0.0001D) {
+        // Единое правило для всех режимов заморозки: замороженного не двигает ничто —
+        // ни взрывы, ни поршни, ни рывок трезубцем, ни чужие плагины.
+        if (event.getVelocity().lengthSquared() > 0.0001D) {
             event.setCancelled(true);
         }
     }
@@ -403,10 +405,41 @@ public final class ProtectionListener implements Listener {
         }
     }
 
-    /** Замороженный не подбирает предметы — он вообще ничего не делает. */
+    /**
+     * Уже открытый инвентарь: игрок мог открыть сундук ДО того, как пинг перешёл порог,
+     * и продолжить перекладывать вещи. Отменяем клики и перетаскивания (InventoryDragEvent)
+     * в любом открытом у него интерфейсе.
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (event.getWhoClicked() instanceof Player player && frozenInteraction(player)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onInventoryDrag(InventoryDragEvent event) {
+        if (event.getWhoClicked() instanceof Player player && frozenInteraction(player)) {
+            event.setCancelled(true);
+        }
+    }
+
+    /** Правка книги — тоже действие в мире, а не «просто текст». */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onEditBook(PlayerEditBookEvent event) {
+        if (frozenInteraction(event.getPlayer())) {
+            event.setCancelled(true);
+        }
+    }
+
+    /**
+     * Замороженный не подбирает предметы — он вообще ничего не делает.
+     * Настройка {@code interactions.block-item-pickup} до 1.6.4 читалась из конфига,
+     * но не использовалась: подбор блокировался всегда.
+     */
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onPickup(PlayerAttemptPickupItemEvent event) {
-        if (frozenInteraction(event.getPlayer())) {
+        if (cfg.blockItemPickup && frozenInteraction(event.getPlayer())) {
             event.setCancelled(true);
         }
     }

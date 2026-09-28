@@ -429,6 +429,10 @@ public final class ProtectionManager {
         }
         state.protectable = computeProtectable(player);
         state.bypass = hasBypass(player);
+        // Заодно обновляем персональные пороги (тоже требуют чтения прав — только в регионе).
+        if (state.needsThresholdRefresh(configGeneration, System.currentTimeMillis(), THRESHOLD_CACHE_MS)) {
+            refreshThresholds(player, state, configGeneration);
+        }
         if (state.clientProtocol <= 0) {
             state.clientProtocol = via.protocolOf(player);
         }
@@ -612,7 +616,11 @@ public final class ProtectionManager {
         }
 
         if (state.chronicTriggered) {
-            return state.forcedImmunityOnly;
+            // Раньше здесь возвращался forcedImmunityOnly — и для IMMUNITY_ONLY защита
+            // не создавалась никогда: флаг «щит без заморозки» ставился, а цикл каждый раз
+            // пропускался, то есть обещанного щита у игрока не было. Теперь пропускаем только
+            // то действие, которому защита действительно не нужна (KICK — игрока отключаем).
+            return cfg.chronicAction.skipsProtection();
         }
         state.chronicTriggered = true;
         audit.write(player.getName(), "CHRONIC_PING",
@@ -631,7 +639,10 @@ public final class ProtectionManager {
                 state.forcedImmunityOnly = true;
                 runOn(player, () -> Msg.send(player, cfg.prefix + cfg.msgChronicNotify,
                         "seconds", badSeconds, "total", cfg.chronicPingSeconds));
-                return true;
+                // Не пропускаем цикл: beginProtection() увидит forcedImmunityOnly и создаст
+                // реальный щит без заморозки (как и обычная защита — в момент, когда пинг
+                // переходит порог входа).
+                return false;
             }
             case KICK -> {
                 state.holdUntil = now + 5_000L;
@@ -826,39 +837,68 @@ public final class ProtectionManager {
      * а тем более через LuckPerms.
      */
     private int[] thresholdsFor(Player player, PingState state, long now, long generation) {
-        boolean stale = state.thresholdsGeneration != generation
-                || state.enter < 0
-                || now - state.thresholdsCachedAt >= THRESHOLD_CACHE_MS;
-        if (stale) {
-            int enter = cfg.enterThresholdMs;
+        if (state.needsThresholdRefresh(generation, now, THRESHOLD_CACHE_MS)) {
+            // Считать пороги в потоке цикла нельзя: это чтение прав и LuckPerms у чужой
+            // сущности (Folia). Ставим задачу в регион игрока, а в этом цикле используем то,
+            // что уже посчитано (или общие пороги из конфига).
+            requestThresholdRefresh(player, state, generation);
+        }
+        return new int[]{
+                state.enter > 0 ? state.enter : cfg.enterThresholdMs,
+                state.exit > 0 ? state.exit : cfg.exitThresholdMs};
+    }
 
-            // 1. LuckPerms: meta pingshield-threshold → право pingshield.threshold.<мс>
-            //    (значения считаются с учётом групп и контекстов LuckPerms)
-            LuckPermsHook.Resolution resolution = luckPerms.resolve(player);
-            if (resolution.threshold() != null) {
-                enter = resolution.threshold();
-            } else if (!cfg.thresholdOverrides.isEmpty()) {
-                // 2. Права из конфига (thresholds.overrides) — как раньше
-                for (Map.Entry<String, Integer> entry : cfg.thresholdOverrides.entrySet()) {
-                    Integer value = entry.getValue();
-                    if (value == null || value < 100) {
-                        continue;
-                    }
-                    if (hasPermission(player, entry.getKey())) {
-                        enter = value;
-                        break;
-                    }
+    /** Выполняется в потоке цикла: просит регион игрока пересчитать пороги (один раз). */
+    private void requestThresholdRefresh(Player player, PingState state, long generation) {
+        if (!state.markThresholdsQueued()) {
+            return;
+        }
+        runOn(player, () -> {
+            try {
+                refreshThresholds(player, state, generation);
+            } finally {
+                state.clearThresholdsQueued();
+            }
+        });
+    }
+
+    /**
+     * Выполняется в регионе игрока: LuckPerms (meta → право) и права из конфига → персональные
+     * пороги. Раньше это считалось в потоке цикла, то есть права читались у чужой сущности.
+     */
+    /**
+     * Выполняется в регионе игрока: LuckPerms (meta → право) и права из конфига → персональные
+     * пороги входа/выхода. Раньше это считалось в потоке цикла, то есть права читались
+     * у чужой сущности — на Folia так нельзя.
+     */
+    private void refreshThresholds(Player player, PingState state, long generation) {
+        int enter = cfg.enterThresholdMs;
+
+        // 1. LuckPerms: meta pingshield-threshold → право pingshield.threshold.<мс>
+        //    (значения считаются с учётом групп и контекстов LuckPerms)
+        LuckPermsHook.Resolution resolution = luckPerms.resolve(player);
+        if (resolution.threshold() != null) {
+            enter = resolution.threshold();
+        } else if (!cfg.thresholdOverrides.isEmpty()) {
+            // 2. Права из конфига (thresholds.overrides) — как раньше
+            for (Map.Entry<String, Integer> entry : cfg.thresholdOverrides.entrySet()) {
+                Integer value = entry.getValue();
+                if (value == null || value < 100) {
+                    continue;
+                }
+                if (hasPermission(player, entry.getKey())) {
+                    enter = value;
+                    break;
                 }
             }
-            // Клиенты, чьи пакеты транслирует Via (например, 1.21.4 на ядре 26.1.2), дают
-            // повышенный джиттер — порог для них поднимается, чтобы не морозить за обычный скачок.
-            enter += via.thresholdBonus(state.clientProtocol);
-            state.enter = enter;
-            state.exit = Math.min(cfg.exitThresholdMs, Math.max(50, enter - 250));
-            state.thresholdsCachedAt = now;
-            state.thresholdsGeneration = generation;
         }
-        return new int[]{state.enter, state.exit};
+        // Клиенты, чьи пакеты транслирует Via (например, 1.21.4 на ядре 26.1.2), дают
+        // повышенный джиттер — порог для них поднимается, чтобы не морозить за обычный скачок.
+        enter += via.thresholdBonus(state.clientProtocol);
+        state.enter = enter;
+        state.exit = Math.min(cfg.exitThresholdMs, Math.max(50, enter - 250));
+        state.thresholdsCachedAt = System.currentTimeMillis();
+        state.thresholdsGeneration = generation;
     }
 
     /**
@@ -1097,11 +1137,11 @@ public final class ProtectionManager {
                     ? coreProtect.blockSearch(selfName, minutes, cfg.cpRadius)
                     : coreProtect.blockSearch(foreign.get(0), minutes, cfg.cpRadius);
             for (Player online : Bukkit.getOnlinePlayers()) {
-                if (!hasNotifyPermission(online)) {
-                    continue;
-                }
                 Player staff = online;
                 runOn(staff, () -> {
+                    if (!hasNotifyPermission(staff)) {
+                        return;
+                    }
                     Msg.send(staff, message,
                             "player", selfName,
                             "users", details,
@@ -1817,6 +1857,8 @@ public final class ProtectionManager {
         state.joinAt = System.currentTimeMillis();
         // Протокол клиента читаем здесь: событие входа выполняется в регионе игрока
         state.clientProtocol = via.protocolOf(player);
+        // Персональные пороги считаем сразу в регионе игрока — в цикле их читать нельзя.
+        refreshThresholds(player, state, configGeneration);
         states.put(id, state);
         fallGraceUntil.remove(id);
         active.remove(id);
@@ -2068,11 +2110,14 @@ public final class ProtectionManager {
             return;
         }
         for (Player online : Bukkit.getOnlinePlayers()) {
-            if (!hasNotifyPermission(online)) {
-                continue;
-            }
             Player staff = online;
-            runOn(staff, () -> Msg.send(staff, message, placeholders));
+            // Права читаем в регионе самого игрока: в потоке цикла это обращение к чужой
+            // сущности, что на Folia запрещено.
+            runOn(staff, () -> {
+                if (hasNotifyPermission(staff)) {
+                    Msg.send(staff, message, placeholders);
+                }
+            });
         }
     }
 
@@ -2082,14 +2127,20 @@ public final class ProtectionManager {
         }
         String message = cfg.prefix + cfg.msgNotifyStaff;
         for (Player online : Bukkit.getOnlinePlayers()) {
-            if (online.getUniqueId().equals(player.getUniqueId()) || !hasNotifyPermission(online)) {
+            if (online.getUniqueId().equals(player.getUniqueId())) {
                 continue;
             }
             Player staff = online;
-            runOn(staff, () -> Msg.send(staff, message,
-                    "player", player.getName(),
-                    "ping", protection.getLastPing(),
-                    "world", player.getWorld().getName()));
+            // Проверка прав — в регионе staff-игрока (та же причина, что и в broadcastStaff).
+            runOn(staff, () -> {
+                if (!hasNotifyPermission(staff)) {
+                    return;
+                }
+                Msg.send(staff, message,
+                        "player", player.getName(),
+                        "ping", protection.getLastPing(),
+                        "world", player.getWorld().getName());
+            });
         }
     }
 
@@ -2120,10 +2171,19 @@ public final class ProtectionManager {
                 }
             }, null);
         } catch (Throwable throwable) {
-            try {
-                action.run(); // плагин выключается — best-effort
-            } catch (Throwable ignored) {
-                // сервер останавливается
+            // Действие можно выполнить напрямую ТОЛЬКО если мы уже владеем регионом игрока.
+            // Иначе (например, плагин выключается, а игрок в другом регионе) игрока не трогаем
+            // вовсе: на Folia обращение к чужому региону ломает поток-безопасность — лучше
+            // потерять сообщение, чем состояние игрока.
+            if (Bukkit.isOwnedByCurrentRegion(player)) {
+                try {
+                    action.run();
+                } catch (Throwable ignored) {
+                    // сервер останавливается
+                }
+            } else {
+                plugin.getLogger().log(Level.FINE,
+                        "Не удалось поставить действие в регион игрока " + player.getName(), throwable);
             }
         }
     }

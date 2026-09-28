@@ -95,6 +95,8 @@ final class PingState {
     volatile long snapshotAt;
     /** Задача обновления снимка уже стоит в очереди региона. */
     private final AtomicBoolean snapshotQueued = new AtomicBoolean(false);
+    /** Задача пересчёта персональных порогов уже стоит в очереди региона. */
+    private final AtomicBoolean thresholdsQueued = new AtomicBoolean(false);
 
     /**
      * Один замер. Стоимость: несколько операций с плавающей точкой — ничего больше.
@@ -201,6 +203,26 @@ final class PingState {
 
     void clearSnapshotQueued() {
         snapshotQueued.set(false);
+    }
+
+    /**
+     * Пора ли пересчитать персональные пороги. Сам расчёт идёт в регионе игрока
+     * (там безопасно читать права и LuckPerms), поэтому в потоке цикла мы только
+     * проверяем, что кэш устарел.
+     */
+    boolean needsThresholdRefresh(long currentGeneration, long now, long cacheMs) {
+        return thresholdsGeneration != currentGeneration
+                || enter < 0
+                || now - thresholdsCachedAt >= cacheMs;
+    }
+
+    /** Задача пересчёта порогов уже стоит в очереди региона. */
+    boolean markThresholdsQueued() {
+        return thresholdsQueued.compareAndSet(false, true);
+    }
+
+    void clearThresholdsQueued() {
+        thresholdsQueued.set(false);
     }
 
     @Override
