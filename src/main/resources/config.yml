@@ -283,6 +283,57 @@ storm:
   ignore-subnets: []
 
 # ------------------------------------------------------------------------------------------
+#  ОБЩИЙ СЕТЕВОЙ СКАЧОК
+# ------------------------------------------------------------------------------------------
+#  Случай, который нельзя путать с личным лагом: пинг поднялся СРАЗУ У ВСЕХ (например
+#  с 60 до 200-400 ms) — упал магистральный канал, проблемы у хостера, сетевая атака
+#  на аплинк. Замораживать весь онлайн в такой момент бессмысленно и опасно: 500 заморозок
+#  — это 500 задач удержания и телепортов ровно тогда, когда сервер и так задыхается.
+#
+#  Как распознаётся: пинг всех игроков за цикл раскладывается в гистограмму (корзины по
+#  25 ms), из неё берётся МЕДИАНА (устойчива к одному лагающему — в отличие от среднего)
+#  и сравнивается с «нормой» — медленным EWMA медианы. Скачком считается ситуация, когда
+#  одновременно: медиана выросла на median-delta-ms, поднялась выше min-median-ms,
+#  выросла не меньше чем в min-ratio раз и «выше нормы» оказалось affected-share игроков.
+#  Всё это должно держаться confirm-cycles циклов подряд.
+network-spike:
+  enabled: true
+  # Минимум игроков с валидным пингом, иначе статистика недостоверна (лобби в 5 человек).
+  min-players: 20
+  # За сколько секунд усредняется «нормальный» уровень сети (медленное EWMA медианы).
+  baseline-seconds: 60
+  # Насколько должна вырасти медиана, мс.
+  median-delta-ms: 120
+  # ...и какой минимум она должна показывать (скачок «от 200 пинга»).
+  min-median-ms: 180
+  # ...и во сколько раз вырасти относительно нормы.
+  min-ratio: 1.4
+  # Какая доля игроков должна оказаться «выше нормы» — чтобы это был скачок у ВСЕХ,
+  # а не у пары человек (0.6 = 60 %).
+  affected-share: 0.6
+  # Подтверждение и гистерезис: циклов подряд для старта / спокойных циклов для закрытия.
+  confirm-cycles: 3
+  recovery-cycles: 10
+  # Сколько секунд скачок может длиться, прежде чем он станет «новой нормой» канала.
+  # Если провайдер сменил маршрут и пинг остался выше НАВСЕГДА — это уже не авария,
+  # и защита должна считать нормой новый уровень, а не жить в режиме скачка вечно.
+  max-spike-seconds: 900
+  # ALERT_ONLY      — только уведомить персонал, защиты работают как обычно;
+  # RAISE_THRESHOLD — (рекомендуется) временно поднять порог входа на величину скачка:
+  #                   личный лаг всё ещё защищается, а общий подъём сети не превращается
+  #                   в массовую заморозку;
+  # SUSPEND         — не включать НОВЫЕ защиты на время скачка (текущие остаются: снимать
+  #                   заморозку в момент сетевой аварии = отдавать игроков на смерть).
+  mode: RAISE_THRESHOLD
+  # Потолок надбавки к порогу, мс (чтобы скачок не «съел» порог совсем).
+  max-threshold-bonus-ms: 1500
+  # Не чаще одного уведомления о скачке, сек.
+  alert-cooldown-seconds: 300
+  # Не копить секунды хронического пинга и баллы «искусственного лага», пока виноват
+  # аплинк, а не игрок. Строго рекомендуется true.
+  suppress-player-metrics: true
+
+# ------------------------------------------------------------------------------------------
 #  ПРОКСИ (Velocity / BungeeCord)
 # ------------------------------------------------------------------------------------------
 # За прокси getPing() измеряет путь «прокси ↔ этот сервер», а не «игрок ↔ прокси».
@@ -462,7 +513,7 @@ messages:
   protect-danger-hold: '<red>⚠ Вы в опасном месте! Защита удерживается ещё <white>%left% с</white>.'
   notify-staff: '<gray>[PingShield] <white>%player%</white> <gray>вошёл в защиту от лагов (<white>%ping% ms</white>).'
   cmd-no-permission: '<red>Недостаточно прав.'
-  cmd-usage: '<gray>Использование: <white>/pingshield <reload|status|check|protect|unprotect|info|profile|perf|cp|search|perms|via> [игрок] [минуты] [радиус]'
+  cmd-usage: '<gray>Использование: <white>/pingshield <reload|status|net|check|protect|unprotect|info|profile|perf|cp|search|perms|via> [игрок] [минуты] [радиус]'
   cmd-reloaded: '<green>Конфигурация перезагружена. Порог входа: <white>%enter% ms</white>, выхода: <white>%exit% ms</white>, период: <white>%interval%</white> тик(ов).'
   cmd-player-not-found: '<red>Игрок <white>%player%</white> не найден в сети.'
   cmd-status-header: '<gold>Под защитой: <white>%count%</white> <dark_gray>|</dark_gray> порог <white>%enter%/%exit% ms</white> <dark_gray>|</dark_gray> серверный лаг: <white>%lag%</white>'
@@ -475,7 +526,7 @@ messages:
   cmd-check-clear: '<white>%player%</white> <dark_gray>|</dark_gray> пинг: <white>%ping% ms</white> <dark_gray>|</dark_gray> порог входа %enter% ms, выхода %exit% ms <dark_gray>|</dark_gray> в бою: %combat%, в паузе: %cooldown%'
   cmd-proxy-warning: '<red>Внимание: похоже, сервер работает за прокси (Velocity/Bungee) — getPing() измеряет путь до прокси, а не до игрока. Проверьте proxy.mode.'
   cmd-profile: '<gold>Профиль <white>%player%</white><gray>: пинг <white>%ping% ms</white>, сглаженный <white>%ewma% ms</white>, jitter <white>%jitter% ms</white> <dark_gray>|</dark_gray> порог <white>%enter%/%exit% ms</white> <dark_gray>|</dark_gray> активаций за час: <white>%activations%</white> <dark_gray>|</dark_gray> серии: <white>%above%/%below%</white> <dark_gray>|</dark_gray> бой: %combat%, пауза: %cooldown% <dark_gray>|</dark_gray> статус: %protect%'
-  cmd-perf: '<gold>PingShield perf<gray>: период <white>%i%</white> тик., enforce <white>%enforce%</white> тик. <dark_gray>|</dark_gray> цикл: сред. <white>%avg_us% мкс</white>, пик <white>%max_us% мкс</white> на <white>%scanned%</white> игроков (<white>%tpp% нс/игрок</white>) <dark_gray>|</dark_gray> математика замера: <white>%bench% нс</white> <dark_gray>|</dark_gray> под защитой: <white>%protect%</white>, проверок: <white>%ticks%</white> <dark_gray>|</dark_gray> heap <white>%heap% МБ</white>, TPS <white>%tps%</white>, серверный лаг: %lag%'
+  cmd-perf: '<gold>PingShield perf<gray>: период <white>%i%</white> тик., enforce <white>%enforce%</white> тик. <dark_gray>|</dark_gray> цикл: сред. <white>%avg_us% мкс</white>, пик <white>%max_us% мкс</white> на <white>%scanned%</white> игроков (<white>%tpp% нс/игрок</white>) <dark_gray>|</dark_gray> математика замера: <white>%bench% нс</white> <dark_gray>|</dark_gray> под защитой: <white>%protect%</white>, проверок: <white>%ticks%</white> <dark_gray>|</dark_gray> heap <white>%heap% МБ</white>, TPS <white>%tps%</white>, серверный лаг: %lag% <dark_gray>|</dark_gray> сеть: медиана <white>%median% ms</white>, p90 <white>%p90% ms</white>, общий скачок: <white>%spike%</white>'
   # CoreProtect
   coreprotect-foreign-changes: '<gold>[PingShield] <white>%player%</white> <gray>стоял в защите от лагов, но вокруг него меняли блоки: <white>%users%</white> <dark_gray>(%total%)</dark_gray> <dark_gray>|</dark_gray> <gray>проверка: <white>%hint%'
   cmd-coreprotect-header: '<gold>CoreProtect по <white>%player%</white><gray>: окно <white>%minutes% мин</white>, радиус <white>%radius%</white>, найдено <white>%total%</white> записей (%type%)'
@@ -507,6 +558,9 @@ messages:
   chronic-ping-kick-warning: '<red>⚠ Через ~<white>%left% с</white> вы будете отключены: плохой пинг держится <white>%seconds% с</white>. Проверьте соединение!'
   chronic-ping-kick: '<red>Отключение: хронический пинг (<white>%seconds% с</white> плохого соединения из %total% с). Перезайдите — счётчик сбросится.'
   storm-pause: '<yellow>⚠ Пинговая аномалия в вашей сети: несколько игроков из одной подсети лагают одновременно. Защита на время приостановлена (%hold% с) — это похоже на проблему провайдера, а не на ваш клиент.'
+  network-spike-alert: '<gold>[PingShield] <white>Общий сетевой скачок</white> <gray>: медиана пинга <white>%median% ms</white> (норма <white>%baseline% ms</white>, <white>%ratio%x</white>), выше нормы <white>%affected%%</white> игроков. Режим: <white>%mode%</white>%bonus%. Пинг вырос у всех — это похоже на канал/хостера, а не на отдельных игроков.'
+  network-spike-end: '<gold>[PingShield] <gray>Сеть вернулась в норму: медиана пинга <white>%median% ms</white>, скачок длился <white>%duration% с</white>.'
+  cmd-net: '<gold>Сеть<gray>: медиана <white>%median% ms</white>, p90 <white>%p90% ms</white>, норма <white>%baseline% ms</white> <dark_gray>|</dark_gray> выше нормы <white>%affected%%</white> из <white>%players%</white> игроков <dark_gray>|</dark_gray> состояние: <white>%state%</white> <dark_gray>|</dark_gray> режим: <white>%mode%</white>, надбавка к порогу: <white>%bonus% ms</white> <dark_gray>|</dark_gray> скачков с старта: <white>%total%</white>'
   storm-alert: '<gold>[PingShield] <white>Пинговый шторм</white> <gray>в подсетях: <white>%subnets%</white> <dark_gray>(%count%)</dark_gray> <dark_gray>|</dark_gray> политика <white>%policy%</white>'
   cmd-info: '<gold>PingShield <white>v%version%</white> <dark_gray>|</dark_gray> включён: %enabled% <dark_gray>|</dark_gray> %enter%/%exit% ms <dark_gray>|</dark_gray> заморозка: %freeze% <dark_gray>|</dark_gray> индикатор: %indicator% <dark_gray>|</dark_gray> лимит: %max% с <dark_gray>|</dark_gray> прокси: %proxy% (режим %proxyMode%) <dark_gray>|</dark_gray> журнал: %audit% <dark_gray>|</dark_gray> CoreProtect: %coreprotect% <dark_gray>|</dark_gray> Via: %via% <dark_gray>|</dark_gray> Folia: %folia%'
 

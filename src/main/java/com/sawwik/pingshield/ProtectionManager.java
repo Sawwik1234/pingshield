@@ -103,6 +103,17 @@ public final class ProtectionManager {
     private volatile Boolean proxyDetected;
     /** Когда последний раз уведомляли о пинговом шторме. */
     private long stormNoticeAt;
+    /**
+     * Детектор общего сетевого скачка: пинг поднялся сразу у всех (аплинк, хостер, DDoS).
+     * Обновляется в том же единственном обходе онлайна — отдельных проходов нет.
+     */
+    private final NetworkMonitor network = new NetworkMonitor();
+    /** Надбавка к порогу входа от детектора скачка (мс), 0 = скачка нет. */
+    private volatile int spikeBonus;
+    /** Когда последний раз уведомляли о скачке. */
+    private long spikeNoticeAt;
+    /** Когда начался текущий скачок (для длительности в сообщении о завершении). */
+    private long spikeStartedAt;
 
     // --- метрики стоимости (для /pingshield perf) ---
     private volatile long lastTickNanos;
@@ -136,6 +147,11 @@ public final class ProtectionManager {
 
     public CoreProtectHook coreProtect() {
         return coreProtect;
+    }
+
+    /** Детектор общего сетевого скачка — для /pingshield net и метрик. */
+    public NetworkMonitor networkMonitor() {
+        return network;
     }
 
     public ViaHook via() {
@@ -196,6 +212,14 @@ public final class ProtectionManager {
             int scanned = 0;
             int highPing = 0;
             int globalEnter = cfg.enterThresholdMs;
+            // Состояние скачка с ПРОШЛОГО цикла: важно ещё до обхода, иначе за цикл, в котором
+            // скачок только распознан, успеют накопиться «чужие» секунды хронического пинга.
+            boolean spikeSuppress = cfg.networkSpikeEnabled && cfg.networkSpikeSuppressMetrics
+                    && network.spiking();
+            if (cfg.networkSpikeEnabled) {
+                // Граница «выше нормы» для гистограммы: считается от базы внутри монитора
+                network.beginCycle(cfg.networkSpikeDeltaMs);
+            }
 
             // --- единственный проход: замер, накопление «плохого» пинга, решения по защищённым ---
             for (Player player : online) {
@@ -210,7 +234,12 @@ public final class ProtectionManager {
                 int[] thresholds = thresholdsFor(player, state, now, generation);
                 int ping = pingOf(player);
                 state.sample(ping, cfg.smoothing, thresholds[0], thresholds[1]);
-                state.accumulateBadPing(state.isBadPingNow());
+                if (cfg.networkSpikeEnabled) {
+                    network.sample(ping);
+                }
+                // Пока идёт общий сетевой скачок, секунды «плохого пинга» не копим:
+                // виноват канал/хостер, а не игрок (иначе весь онлайн уйдёт в chronic-ping).
+                state.accumulateBadPing(!spikeSuppress && state.isBadPingNow());
                 scanned++;
                 if (ping >= globalEnter) {
                     highPing++;
@@ -227,9 +256,13 @@ public final class ProtectionManager {
             lastScanned = scanned;
             boolean serverLagging = evaluateServerLag(online.size(), highPing, now);
             Set<String> stormSubnets = evaluateStorm(online, now);
+            spikeSuppress = evaluateNetworkSpike(online.size(), now);
 
             // --- новые кандидаты + политики анти-абуза ---
-            if (!serverLagging) {
+            boolean spikeSuspend = cfg.networkSpikeEnabled
+                    && cfg.networkSpikeMode == PingShieldConfig.SpikeMode.SUSPEND
+                    && network.spiking();
+            if (!serverLagging && !spikeSuspend) {
                 for (Player player : online) {
                     UUID id = player.getUniqueId();
                     Protection protection = active.get(id);
@@ -253,8 +286,10 @@ public final class ProtectionManager {
                         continue;
                     }
                     List<String> reasons = new ArrayList<>(4);
-                    int score = suspiciousScore(player, state, now, reasons);
-                    if (cfg.suspiciousEnabled && score >= cfg.suspiciousThreshold
+                    // Во время общего скачка баллы не считаем: «в бою» и «после урона» тогда
+                    // выглядят подозрительно у ВСЕХ сразу — это ложная картина.
+                    int score = spikeSuppress ? 0 : suspiciousScore(player, state, now, reasons);
+                    if (cfg.suspiciousEnabled && !spikeSuppress && score >= cfg.suspiciousThreshold
                             && !applySuspiciousPolicy(player, state, score, reasons, now)) {
                         continue;
                     }
@@ -280,6 +315,79 @@ public final class ProtectionManager {
         }
     }
 
+    /**
+     * Итоговый порог входа для игрока: персональный + поправка на шумный канал + поправка
+     * на общий сетевой скачок. Один метод — чтобы надбавка не «терялась» в одной из проверок.
+     */
+    private double effectiveEnter(PingState state) {
+        return state.effectiveEnter(cfg.jitterThresholdMs,
+                cfg.jitterEnterBonusMs + via.jitterBonus(state.clientProtocol)) + spikeBonus;
+    }
+
+    // ================================================================== общий сетевой скачок
+
+    /**
+     * Обновляет состояние детектора общего скачка и рассылает уведомления о старте/окончании.
+     *
+     * @return true, если сейчас идёт скачок и метрики игроков нужно подавить
+     */
+    private boolean evaluateNetworkSpike(int onlineCount, long now) {
+        if (!cfg.networkSpikeEnabled) {
+            spikeBonus = 0;
+            return false;
+        }
+        NetworkMonitor.Transition transition = network.evaluate(now, cfg);
+
+        spikeBonus = cfg.networkSpikeMode == PingShieldConfig.SpikeMode.RAISE_THRESHOLD
+                ? network.thresholdBonus(cfg.networkSpikeMaxBonusMs)
+                : 0;
+
+        if (transition == NetworkMonitor.Transition.STARTED) {
+            spikeStartedAt = now;
+            notifyNetworkSpike(onlineCount, now);
+        } else if (transition == NetworkMonitor.Transition.ENDED) {
+            long duration = Math.max(0L, (now - spikeStartedAt) / 1000L);
+            audit.write("-", "NETWORK_SPIKE_END",
+                    "медиана=" + (long) network.medianMs() + "ms норма=" + (long) network.baselineMs()
+                            + "ms длительность=" + duration + "с");
+            if (!cfg.msgNetworkSpikeEnd.isEmpty()) {
+                broadcastStaff(cfg.prefix + cfg.msgNetworkSpikeEnd,
+                        "median", (long) network.medianMs(),
+                        "duration", duration);
+            }
+        }
+        return cfg.networkSpikeSuppressMetrics && network.spiking();
+    }
+
+    private void notifyNetworkSpike(int onlineCount, long now) {
+        String state = "медиана=" + (long) network.medianMs() + "ms p90=" + (long) network.p90Ms()
+                + "ms норма=" + (long) network.baselineMs() + "ms сдвиг=+" + (long) network.deltaMs()
+                + "ms доля=" + Math.round(network.affectedShare() * 100.0D) + "% игроков="
+                + network.countedPlayers() + " онлайн=" + onlineCount + " режим=" + cfg.networkSpikeMode
+                + " надбавка=" + spikeBonus + "ms";
+        audit.write("-", "NETWORK_SPIKE_START", state);
+        plugin.getLogger().warning("PingShield: общий сетевой скачок — " + state);
+
+        if (now - spikeNoticeAt < cfg.networkSpikeAlertCooldownSeconds * 1000L
+                || cfg.msgNetworkSpikeAlert.isEmpty()) {
+            return;
+        }
+        spikeNoticeAt = now;
+        broadcastStaff(cfg.prefix + cfg.msgNetworkSpikeAlert,
+                "median", (long) network.medianMs(),
+                "baseline", (long) network.baselineMs(),
+                "ratio", String.format(java.util.Locale.ROOT, "%.2f",
+                        network.baselineMs() > 0 ? network.medianMs() / network.baselineMs() : 1.0D),
+                "affected", Math.round(network.affectedShare() * 100.0D),
+                "mode", cfg.networkSpikeMode.name(),
+                "bonus", spikeBonus > 0 ? " (+" + spikeBonus + " ms к порогу)" : "");
+    }
+
+    /** Текущая надбавка к порогу от детектора скачка — для команд и метрик. */
+    public int spikeBonusMs() {
+        return spikeBonus;
+    }
+
     // ================================================================== снимок состояния (Folia)
 
     /**
@@ -288,8 +396,7 @@ public final class ProtectionManager {
      * ограничена: обычные игроки вообще не попадают сюда.
      */
     private void ensureSnapshot(Player player, PingState state, long now) {
-        double threshold = state.effectiveEnter(cfg.jitterThresholdMs,
-                cfg.jitterEnterBonusMs + via.jitterBonus(state.clientProtocol));
+        double threshold = effectiveEnter(state);
         if (state.ewma < threshold - 500.0D || now - state.snapshotAt < 5_000L) {
             return;
         }
@@ -762,9 +869,7 @@ public final class ProtectionManager {
     }
 
     private boolean shouldProtect(Player player, PingState state, long now) {
-        double threshold = state.effectiveEnter(
-                cfg.jitterThresholdMs,
-                cfg.jitterEnterBonusMs + via.jitterBonus(state.clientProtocol));
+        double threshold = effectiveEnter(state);
         if (state.ewma < threshold) {
             return false;
         }

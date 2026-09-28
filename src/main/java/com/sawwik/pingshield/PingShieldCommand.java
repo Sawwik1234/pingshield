@@ -25,8 +25,8 @@ import java.util.Map;
 public final class PingShieldCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS =
-            List.of("reload", "status", "check", "protect", "unprotect", "info", "profile", "perf",
-                    "cp", "search", "perms", "via", "help");
+            List.of("reload", "status", "net", "check", "protect", "unprotect", "info", "profile",
+                    "perf", "cp", "search", "perms", "via", "help");
 
     private final PingShieldPlugin plugin;
     private final ProtectionManager manager;
@@ -65,6 +65,7 @@ public final class PingShieldCommand implements CommandExecutor, TabCompleter {
                         "interval", cfg.checkIntervalTicks);
             }
             case "status" -> sendStatus(sender);
+            case "net" -> sendNet(sender);
             case "info" -> sendInfo(sender);
             case "perf" -> sendPerf(sender);
             case "via" -> sendVia(sender);
@@ -156,7 +157,7 @@ public final class PingShieldCommand implements CommandExecutor, TabCompleter {
                 || sender.hasPermission(Permissions.BYPASS) || sender.hasPermission(Permissions.COREPROTECT)) {
             return true;
         }
-        for (String node : List.of("reload", "status", "check", "protect", "unprotect", "info",
+        for (String node : List.of("reload", "status", "net", "check", "protect", "unprotect", "info",
                 "profile", "perf", "cp", "search", "perms", "via")) {
             if (sender.hasPermission(Permissions.command(node))) {
                 return true;
@@ -294,6 +295,30 @@ public final class PingShieldCommand implements CommandExecutor, TabCompleter {
      * Метрики стоимости: измеренное время цикла проверки и синтетический замер математики
      * на одного игрока. Нужны, чтобы обсуждать нагрузку цифрами.
      */
+    /**
+     * {@code /pingshield net} — состояние сети «в целом»: медиана/p90 пинга всех игроков,
+     * норма (медленная база), доля игроков выше нормы и активный режим при общем скачке.
+     * Именно этой командой отвечают на вопрос «лагает у всех или только у меня».
+     */
+    private void sendNet(CommandSender sender) {
+        PingShieldConfig cfg = plugin.config();
+        NetworkMonitor net = manager.networkMonitor();
+        boolean spiking = net.spiking();
+        String state = spiking
+                ? "СКАЧОК СЕТИ (с " + (System.currentTimeMillis() - net.spikeSince()) / 1000L + " с)"
+                : "норма";
+        Msg.send(sender, cfg.cmdNet,
+                "median", net.countedPlayers() == 0 ? "—" : (long) net.medianMs(),
+                "p90", net.countedPlayers() == 0 ? "—" : (long) net.p90Ms(),
+                "baseline", net.baselineMs() < 0 ? "—" : (long) net.baselineMs(),
+                "affected", Math.round(net.affectedShare() * 100.0D),
+                "players", net.countedPlayers(),
+                "state", state,
+                "mode", cfg.networkSpikeEnabled ? cfg.networkSpikeMode.name() : "ВЫКЛ",
+                "bonus", manager.spikeBonusMs(),
+                "total", net.spikesTotal());
+    }
+
     private void sendPerf(CommandSender sender) {
         PingShieldConfig cfg = plugin.config();
         double benchNanos = manager.benchmarkSampleNanos(200_000);
@@ -321,7 +346,13 @@ public final class PingShieldCommand implements CommandExecutor, TabCompleter {
                 "ticks", manager.totalTicks(),
                 "heap", usedMb,
                 "tps", String.format(java.util.Locale.ROOT, "%.1f", tps),
-                "lag", manager.isLagSuspended() ? "да" : "нет");
+                "lag", manager.isLagSuspended() ? "да" : "нет",
+                "median", manager.networkMonitor().countedPlayers() == 0
+                        ? "—" : String.valueOf((long) manager.networkMonitor().medianMs()),
+                "p90", manager.networkMonitor().countedPlayers() == 0
+                        ? "—" : String.valueOf((long) manager.networkMonitor().p90Ms()),
+                "spike", manager.networkMonitor().spiking()
+                        ? "да (+" + manager.spikeBonusMs() + " ms)" : "нет");
     }
 
     /**

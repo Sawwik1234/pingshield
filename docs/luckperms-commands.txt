@@ -4,6 +4,7 @@
 # === Персонал ===
 lp group staff permission set pingshield.admin true
 lp group moderator permission set pingshield.command.status true
+lp group moderator permission set pingshield.command.net true
 lp group moderator permission set pingshield.command.check true
 lp group moderator permission set pingshield.command.profile true
 lp group moderator permission set pingshield.notify true

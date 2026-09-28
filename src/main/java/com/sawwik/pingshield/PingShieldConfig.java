@@ -84,6 +84,17 @@ public final class PingShieldConfig {
     }
 
     /** Что делать, когда лагает целая подсеть (проблема провайдера или атака). */
+    /** Что делать при общем сетевом скачке (пинг поднялся сразу у всех игроков). */
+    public enum SpikeMode {
+        /** Только уведомить персонал: защиты работают как обычно. */
+        ALERT_ONLY,
+        /** Поднять порог входа на величину скачка (по умолчанию): личный лаг всё ещё защищается,
+         *  а общий подъём сети не превращается в массовую заморозку. */
+        RAISE_THRESHOLD,
+        /** Приостановить автозащиту на время скачка: не морозить онлайн, когда виноват аплинк. */
+        SUSPEND
+    }
+
     public enum StormPolicy {
         /** Защищать как обычно, но уведомить персонал — по умолчанию. */
         ALERT_ONLY,
@@ -210,6 +221,23 @@ public final class PingShieldConfig {
     public StormPolicy stormPolicy = StormPolicy.ALERT_ONLY;
     public Set<String> stormIgnoreSubnets = new LinkedHashSet<>();
 
+    // --- общий сетевой скачок (network-spike) ---
+    public boolean networkSpikeEnabled = true;
+    public int networkSpikeMinPlayers = 20;
+    public int networkSpikeBaselineSeconds = 60;
+    public int networkSpikeDeltaMs = 120;
+    public int networkSpikeMinMedianMs = 180;
+    public double networkSpikeMinRatio = 1.4D;
+    public double networkSpikeAffectedShare = 0.6D;
+    public int networkSpikeConfirmCycles = 3;
+    public int networkSpikeRecoveryCycles = 10;
+    /** Дольше этого времени скачок считается «новой нормой» канала (база принимает новый уровень). */
+    public int networkSpikeMaxSeconds = 900;
+    public SpikeMode networkSpikeMode = SpikeMode.RAISE_THRESHOLD;
+    public int networkSpikeMaxBonusMs = 1500;
+    public int networkSpikeAlertCooldownSeconds = 300;
+    public boolean networkSpikeSuppressMetrics = true;
+
     // --- производительность ---
     /** Как часто перепроверять состояние защищённого игрока (тики). 10 = дважды в секунду. */
     public int enforceIntervalTicks = 10;
@@ -287,6 +315,12 @@ public final class PingShieldConfig {
     public String msgStormAlert = "";
     /** Сообщение игроку, когда защиту сняли из-за пингового шторма подсети. */
     public String msgStormPause = "";
+    /** Уведомление персоналу: пинг поднялся у всех сразу (общий сетевой скачок). */
+    public String msgNetworkSpikeAlert = "";
+    /** Уведомление персоналу: сеть вернулась в норму. */
+    public String msgNetworkSpikeEnd = "";
+    /** Строка /pingshield net — состояние детектора скачка. */
+    public String cmdNet = "";
 
     // --- интеграция: CoreProtect ---
     public boolean cpEnabled = true;
@@ -412,6 +446,21 @@ public final class PingShieldConfig {
         stormAlertCooldownSeconds = c.getInt("storm.alert-cooldown-seconds", 300);
         stormPolicy = enumValue(StormPolicy.class, c.getString("storm.policy"), StormPolicy.ALERT_ONLY);
         stormIgnoreSubnets = lowerSet(c.getStringList("storm.ignore-subnets"));
+
+        networkSpikeEnabled = c.getBoolean("network-spike.enabled", true);
+        networkSpikeMinPlayers = c.getInt("network-spike.min-players", 20);
+        networkSpikeBaselineSeconds = c.getInt("network-spike.baseline-seconds", 60);
+        networkSpikeDeltaMs = c.getInt("network-spike.median-delta-ms", 120);
+        networkSpikeMinMedianMs = c.getInt("network-spike.min-median-ms", 180);
+        networkSpikeMinRatio = c.getDouble("network-spike.min-ratio", 1.4D);
+        networkSpikeAffectedShare = c.getDouble("network-spike.affected-share", 0.6D);
+        networkSpikeConfirmCycles = c.getInt("network-spike.confirm-cycles", 3);
+        networkSpikeRecoveryCycles = c.getInt("network-spike.recovery-cycles", 10);
+        networkSpikeMaxSeconds = c.getInt("network-spike.max-spike-seconds", 900);
+        networkSpikeMode = enumValue(SpikeMode.class, c.getString("network-spike.mode"), SpikeMode.RAISE_THRESHOLD);
+        networkSpikeMaxBonusMs = c.getInt("network-spike.max-threshold-bonus-ms", 1500);
+        networkSpikeAlertCooldownSeconds = c.getInt("network-spike.alert-cooldown-seconds", 300);
+        networkSpikeSuppressMetrics = c.getBoolean("network-spike.suppress-player-metrics", true);
         enforceIntervalTicks = c.getInt("perf.enforce-interval-ticks", 10);
 
         proxyMode = enumValue(ProxyMode.class, c.getString("proxy.mode"), ProxyMode.AUTO);
@@ -483,6 +532,9 @@ public final class PingShieldConfig {
         msgChronicKick = str(c, "messages.chronic-ping-kick");
         msgStormAlert = str(c, "messages.storm-alert");
         msgStormPause = str(c, "messages.storm-pause");
+        msgNetworkSpikeAlert = str(c, "messages.network-spike-alert");
+        msgNetworkSpikeEnd = str(c, "messages.network-spike-end");
+        cmdNet = str(c, "messages.cmd-net");
 
         cpEnabled = c.getBoolean("integrations.coreprotect.enabled", true);
         cpMarkers = c.getBoolean("integrations.coreprotect.markers", true);
@@ -662,6 +714,42 @@ public final class PingShieldConfig {
         if (stormPolicy == StormPolicy.PAUSE_SUBNET && stormMinPlayersSameSubnet < 3) {
             warnings.add("storm.policy = PAUSE_SUBNET при пороге " + stormMinPlayersSameSubnet + ": защита будет "
                     + "сниматься слишком охотно. Обычно порог 3-5 игроков.");
+        }
+        if (networkSpikeEnabled) {
+            if (networkSpikeMinPlayers < 2) {
+                networkSpikeMinPlayers = 2;
+                warnings.add("network-spike.min-players < 2 — установлено 2: на меньшем числе игроков "
+                        + "медиана недостоверна, скачок легко спутать с одним лагающим.");
+            }
+            if (networkSpikeDeltaMs < 20) {
+                networkSpikeDeltaMs = 20;
+                warnings.add("network-spike.median-delta-ms < 20 — установлено 20 мс (иначе обычный "
+                        + "дрейф пинга будет считаться скачком).");
+            }
+            if (networkSpikeMinRatio < 1.05D) {
+                networkSpikeMinRatio = 1.05D;
+                warnings.add("network-spike.min-ratio < 1.05 — установлено 1.05.");
+            }
+            if (networkSpikeAffectedShare < 0.2D || networkSpikeAffectedShare > 1.0D) {
+                networkSpikeAffectedShare = 0.6D;
+                warnings.add("network-spike.affected-share должен быть в диапазоне 0.2…1.0 — установлено 0.6.");
+            }
+            if (networkSpikeBaselineSeconds < 10) {
+                networkSpikeBaselineSeconds = 10;
+                warnings.add("network-spike.baseline-seconds < 10 — установлено 10: база не успевает "
+                        + "набрать статистику.");
+            }
+            if (networkSpikeRecoveryCycles < 1) {
+                networkSpikeRecoveryCycles = 1;
+            }
+            if (networkSpikeMaxBonusMs < 0) {
+                networkSpikeMaxBonusMs = 0;
+            }
+            if (networkSpikeMaxSeconds < 60) {
+                networkSpikeMaxSeconds = 60;
+                warnings.add("network-spike.max-spike-seconds < 60 — установлено 60: иначе аномалия "
+                        + "будет считаться «новой нормой» почти сразу.");
+            }
         }
         if (stormHoldSeconds < 10) {
             stormHoldSeconds = 10;

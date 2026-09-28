@@ -29,7 +29,11 @@ permissions:
     children:
       pingshield.command.reload: true
       pingshield.command.status: true
-      pingshield.command.check: true
+      pingshield.command.net: true
+      pingshield.command.net:
+    description: /pingshield net — состояние сети целиком (медиана пинга, общий скачок)
+    default: op
+  pingshield.command.check: true
       pingshield.command.protect: true
       pingshield.command.unprotect: true
       pingshield.command.info: true
@@ -47,6 +51,9 @@ permissions:
     default: op
   pingshield.command.status:
     description: /pingshield status — список защищённых игроков
+    default: op
+  pingshield.command.net:
+    description: /pingshield net — состояние сети целиком (медиана пинга, общий скачок)
     default: op
   pingshield.command.check:
     description: /pingshield check <игрок> — пинг и состояние игрока

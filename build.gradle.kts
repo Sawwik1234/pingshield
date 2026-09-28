@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "com.sawwik.pingshield"
-version = "1.5.0"
+version = "1.6.0"
 description = "Защита игроков с очень высоким пингом: заморозка движения и иммунитет к урону. Folia-ready."
 
 // ---------------------------------------------------------------------------
@@ -99,6 +99,18 @@ tasks.register<JavaExec>("simulate") {
     mainClass = "com.sawwik.pingshield.PingSimulation"
     classpath = sourceSets.test.get().runtimeClasspath
     jvmArgs("-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "-Dfile.encoding=UTF-8")
+}
+
+// Нагрузочный стенд: ./gradlew load  (или -Pplayers=1500 -Pcycles=120)
+// Показывает, сколько нс/мкс стоит горячий путь на большом онлайне.
+tasks.register<JavaExec>("load") {
+    group = "pingshield"
+    description = "Нагрузочный стенд: горячий путь цикла на 600+ игроков (TOC в тик)"
+    mainClass = "com.sawwik.pingshield.PingShieldLoadTest"
+    classpath = sourceSets.test.get().runtimeClasspath
+    jvmArgs("-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8", "-Dfile.encoding=UTF-8")
+    (findProperty("players") as String?)?.let { systemProperty("players", it) }
+    (findProperty("cycles") as String?)?.let { systemProperty("cycles", it) }
 }
 
 // Удобный алиас: ./gradlew deploy — собрать и скопировать JAR в папку сервера.

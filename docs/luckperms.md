@@ -6,9 +6,10 @@
 
 | Право | Что даёт | По умолчанию |
 |---|---|---|
-| `pingshield.admin` | **зонтик**: все команды + уведомления (13 детей) | op |
+| `pingshield.admin` | **зонтик**: все команды + уведомления (14 детей) | op |
 | `pingshield.command.reload` | `/pingshield reload` | op |
 | `pingshield.command.status` | `/pingshield status` | op |
+| `pingshield.command.net` | `/pingshield net` — состояние сети целиком (медиана, общий скачок) | op |
 | `pingshield.command.check` | `/pingshield check <игрок>` | op |
 | `pingshield.command.protect` | `/pingshield protect <игрок>` | op |
 | `pingshield.command.unprotect` | `/pingshield unprotect <игрок>` | op |
@@ -43,6 +44,7 @@ meta pingshield-threshold  →  право pingshield.threshold.<мс>  →  thr
 /lp group staff permission set pingshield.admin true
 # или точечно, если нельзя перезагружать конфиг:
 /lp group moderator permission set pingshield.command.status true
+/lp group moderator permission set pingshield.command.net true
 /lp group moderator permission set pingshield.command.check true
 /lp group moderator permission set pingshield.command.profile true
 /lp group moderator permission set pingshield.notify true
