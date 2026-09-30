@@ -902,12 +902,12 @@ public final class ProtectionManager {
                         + " найден повреждённый маркер заморозки — состояние не меняю, маркер убран");
                 case APPLIED -> {
                     StuckStateMarker marker = result.marker();
-                    plugin.getLogger().warning("PingShield: у игрока " + player.getName()
-                            + " заморозка не была снята (выход, выключение или краш) — состояние возвращено (неуязвимость="
+                    plugin.getLogger().warning("PingShield: найден маркер заморозки у " + player.getName()
+                            + " — исходное состояние возвращено (неуязвимость="
                             + marker.invulnerable() + ", скорость ходьбы=" + marker.walkSpeed()
                             + ", скорость полёта=" + marker.flySpeed() + ")");
-                    audit.write(player.getName(), "STATE_REPAIR_ON_JOIN",
-                            "восстановлено состояние прошлой сессии: inv=" + marker.invulnerable()
+                    audit.write(player.getName(), "STATE_REPAIR",
+                            "восстановлено состояние по маркеру: inv=" + marker.invulnerable()
                                     + " walk=" + marker.walkSpeed() + " fly=" + marker.flySpeed());
                     // Маркер в CoreProtect: при разборе «что было с игроком» видно и это.
                     coreProtect.logMarker(player, CoreProtectHook.Kind.END,
@@ -968,7 +968,7 @@ public final class ProtectionManager {
     private void restoreStateOnQuit(Player player, Protection protection) {
         try {
             if (!protection.isImmunityOnly()) {
-                releaseFreeze(player, protection, true); // внутри же убирается расписка
+                releaseFreeze(player, protection, EndReason.QUIT, false); // состояние сохраняем до выхода
             } else {
                 clearStuckMarker(player); // у щита без заморозки сущность не менялась
             }
@@ -1209,7 +1209,10 @@ public final class ProtectionManager {
         stateRef.dangerSince = -1L;
 
         runOn(player, () -> {
-            if (!player.isOnline()) {
+            // Защиту могли снять, пока задача ожидала очередь региона (Folia). Не даём
+            // запоздалой задаче повторно заморозить уже размороженного игрока.
+            if (!ProtectionLifecyclePolicy.mayApplyFreeze(player.isOnline(),
+                    active.get(player.getUniqueId()) == protection, protection.isReleased())) {
                 return;
             }
             if (!protection.isImmunityOnly()) {
@@ -1270,7 +1273,12 @@ public final class ProtectionManager {
                     // Не даём будущему прыжку получить «льготу» за старую защиту, снятую на земле.
                     fallGraceUntil.remove(protection.getUuid());
                 }
-                releaseFreeze(target, protection);
+                // Смерть может позже сбросить свойства сущности. Оставляем маркер до
+                // PlayerRespawnEvent и повторно применяем исходные значения уже после респауна.
+                boolean death = ProtectionLifecyclePolicy.preserveRecoveryMarker(reason);
+                if (protection.isSnapshotTaken()) {
+                    releaseFreeze(target, protection, reason, death);
+                }
                 sendProtectEnd(target, protection, reason);
             });
         }
@@ -1709,18 +1717,13 @@ public final class ProtectionManager {
         }
     }
 
-    /** Выполняется в регионе игрока: возврат ровно в то состояние, что было до защиты. */
-    private void releaseFreeze(Player player, Protection protection) {
-        releaseFreeze(player, protection, false);
-    }
-
     /**
-     * Возврат состояния. {@code quiet = true} — путь выхода игрока: игрок уже уходит, поэтому
-     * <b>не</b> выдаём эффекты «мягкой посадки» (они сохранились бы в playerdata, и вернувшийся
-     * в течение трёх секунд игрок получил бы Slow Falling с Fire Resistance «в наследство»)
-     * и не трогаем индикатор (пакеты уходящему игроку бессмысленны).
+     * Возврат состояния в регионе игрока. При смерти не удаляем маркер до респауна:
+     * сервер может повторно записать атрибуты уже после PlayerDeathEvent.
      */
-    private void releaseFreeze(Player player, Protection protection, boolean quiet) {
+    private void releaseFreeze(Player player, Protection protection, EndReason reason, boolean keepMarker) {
+        boolean quitting = reason == EndReason.QUIT;
+        boolean dead = reason == EndReason.DEATH;
         List<String> failures = new ArrayList<>(4);
         if (!protection.isImmunityOnly()) {
             // Всегда возвращаем снимок, даже если конфиг перезагрузили посреди защиты.
@@ -1803,25 +1806,31 @@ public final class ProtectionManager {
             }
         }
 
-        if (!quiet) {
+        if (!quitting) {
             try {
                 hideIndicator(player, protection);
             } catch (Throwable throwable) {
                 plugin.getLogger().log(Level.FINE, "Не удалось убрать индикатор у " + player.getName(), throwable);
             }
-            applyReleaseEffects(player);
+            if (!dead) {
+                boolean allowSlowFalling = FallDamageGracePolicy.shouldApplySlowFalling(
+                        player.isOnGround(), reason);
+                applyReleaseEffects(player, allowSlowFalling);
+            }
         }
 
         if (failures.isEmpty()) {
-            if (!clearStuckMarker(player)) {
+            if (!keepMarker && !clearStuckMarker(player)) {
                 failures.add("маркер восстановления");
             }
         }
         if (!failures.isEmpty()) {
             plugin.getLogger().warning("PingShield: не удалось полностью восстановить состояние "
                     + player.getName() + " (" + String.join(", ", failures)
-                    + "); маркер сохранён, запланирую повторную попытку");
-            retryStuckStateRepair(player, true);
+                    + "); маркер сохранён" + (keepMarker ? " до респауна" : ", запланирую повторную попытку"));
+            if (!keepMarker) {
+                retryStuckStateRepair(player, true);
+            }
         }
     }
 
@@ -1841,14 +1850,17 @@ public final class ProtectionManager {
      * в огне или под водой. Fire Resistance и Slow Falling дают шанс среагировать.
      */
     private void applyReleaseEffects(Player player) {
+        applyReleaseEffects(player, true);
+    }
+
+    private void applyReleaseEffects(Player player, boolean allowSlowFalling) {
         if (cfg.releaseEffects.isEmpty() || cfg.releaseEffectsDurationTicks <= 0) {
             return;
         }
         for (PotionEffectType type : cfg.releaseEffects) {
-            // Slow Falling нужен только если игрок действительно отпускается в воздухе.
-            // На земле он давал бы бесплатную защиту от последующего, уже нового падения.
+            // Мягкое падение даём только при автоматическом снятии защиты в воздухе.
             if (type.equals(PotionEffectType.SLOW_FALLING)
-                    && !FallDamageGracePolicy.shouldApplySlowFalling(player.isOnGround())) {
+                    && (!allowSlowFalling || player.isOnGround())) {
                 continue;
             }
             try {
@@ -2176,9 +2188,8 @@ public final class ProtectionManager {
             // После смерти полёт сбрасывается сервером — снимаем защиту, чтобы не осталась заморозка.
             end(player, protection, EndReason.DEATH);
         }
-        // PlayerDeathEvent мог уже снять Protection из active, но восстановление отдельных
-        // свойств могло завершиться ошибкой. Проверяем сохранённый маркер после применения
-        // состояния респауна, даже если активной защиты в карте больше нет.
+        // Смерть может сбросить атрибуты уже после PlayerDeathEvent. Маркер оставлен до
+        // респауна; после применения состояния игрока повторно возвращаем исходные значения.
         try {
             player.getScheduler().runDelayed(plugin, task -> repairStuckState(player, true), null, 1L);
         } catch (Throwable throwable) {

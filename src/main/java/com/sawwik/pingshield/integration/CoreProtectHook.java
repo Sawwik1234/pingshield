@@ -287,7 +287,10 @@ public final class CoreProtectHook {
      */
     private List<Change> areaScan(Location center, int radius, int seconds) {
         try {
-            List<Integer> actions = List.of(LEGACY_BREAK, LEGACY_PLACE, LEGACY_INTERACTION);
+            // CoreProtect 24.1 удаляет неподдерживаемые действия через removeIf прямо из списка.
+            // Поэтому нельзя передавать List.of(): API получает отдельную изменяемую копию.
+            List<Integer> actions = CoreProtectLookupArguments.mutableActions(
+                    LEGACY_BREAK, LEGACY_PLACE, LEGACY_INTERACTION);
             List<String[]> rows = api.performLookup(seconds, null, null, null, null, actions, radius, center);
             if (rows == null) {
                 return List.of();

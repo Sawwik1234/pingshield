@@ -11,10 +11,10 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-VERSION="${VERSION:-1.6.8}"
+VERSION="${VERSION:-1.6.10}"
 REPO="${REPO:-Sawwik1234/pingshield}"
-EXPECT_BYTES="${EXPECT_BYTES:-165834}"
-EXPECT_SHA="${EXPECT_SHA:-081741ffa76d477a09b97313e98922762a953c5d40d1b5412c3016877de517bf}"
+EXPECT_BYTES="${EXPECT_BYTES:-156712}"
+EXPECT_SHA="${EXPECT_SHA:-49ee0f44e201fe6027218262e4b9a07a3e1f89fbdc161f73fe7c426c4ba48550}"
 TOKEN="${GITHUB_TOKEN:-}"
 
 cd "$(dirname "$0")/.."

@@ -21,10 +21,18 @@ class FallDamageGracePolicyTest {
     }
 
     @Test
-    @DisplayName("Slow Falling даётся только если защита снята в воздухе")
-    void slowFallingOnlyWhenAirborne() {
-        assertTrue(FallDamageGracePolicy.shouldApplySlowFalling(false));
-        assertFalse(FallDamageGracePolicy.shouldApplySlowFalling(true));
+    @DisplayName("При ручном снятии падение не смягчается")
+    void manualReleaseDoesNotProtectFall() {
+        assertFalse(FallDamageGracePolicy.shouldGrant(ProtectionManager.EndReason.MANUAL, true, 3000));
+        assertFalse(FallDamageGracePolicy.shouldApplySlowFalling(false, ProtectionManager.EndReason.MANUAL));
+    }
+
+    @Test
+    @DisplayName("Slow Falling даётся только при автоматическом снятии в воздухе")
+    void slowFallingOnlyWhenAirborneAndAutomatic() {
+        assertTrue(FallDamageGracePolicy.shouldApplySlowFalling(false, ProtectionManager.EndReason.PING_OK));
+        assertFalse(FallDamageGracePolicy.shouldApplySlowFalling(true, ProtectionManager.EndReason.PING_OK));
+        assertFalse(FallDamageGracePolicy.shouldApplySlowFalling(false, ProtectionManager.EndReason.DEATH));
     }
 
     @Test
