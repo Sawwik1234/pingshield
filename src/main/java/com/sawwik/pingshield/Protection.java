@@ -81,6 +81,8 @@ public final class Protection {
      * {@code null} = использовать режим из конфига сервера.
      */
     private volatile PingShieldConfig.FreezeMode freezeModeOverride;
+    /** Режим, который реально применили при старте защиты (не меняется при reload конфига). */
+    private volatile PingShieldConfig.FreezeMode freezeModeUsed;
 
     /**
      * true, пока задача enforce уже стоит в очереди EntityScheduler.
@@ -204,9 +206,19 @@ public final class Protection {
         this.immunityOnly = immunityOnly;
     }
 
-    /** Режим заморозки для этого игрока: персональный, если задан, иначе серверный. */
+    /** Режим заморозки, применённый к игроку в этой защите. */
     public PingShieldConfig.FreezeMode effectiveFreezeMode(PingShieldConfig.FreezeMode serverDefault) {
+        if (freezeModeUsed != null) {
+            return freezeModeUsed;
+        }
         return freezeModeOverride != null ? freezeModeOverride : serverDefault;
+    }
+
+    /** Фиксирует конфигурацию режима при первом применении — reload не должен менять план восстановления. */
+    public void captureFreezeMode(PingShieldConfig.FreezeMode serverDefault) {
+        if (freezeModeUsed == null) {
+            freezeModeUsed = freezeModeOverride != null ? freezeModeOverride : serverDefault;
+        }
     }
 
     public void setFreezeModeOverride(PingShieldConfig.FreezeMode mode) {

@@ -864,12 +864,14 @@ public final class ProtectionManager {
     }
 
     /** Убирает расписку (состояние возвращено штатно). */
-    private void clearStuckMarker(Player player) {
+    private boolean clearStuckMarker(Player player) {
         try {
             player.getPersistentDataContainer().remove(stuckStateKey);
+            return true;
         } catch (Throwable throwable) {
-            plugin.getLogger().log(Level.FINE,
+            plugin.getLogger().log(Level.WARNING,
                     "Не удалось убрать маркер заморозки у " + player.getName(), throwable);
+            return false;
         }
     }
 
@@ -940,21 +942,26 @@ public final class ProtectionManager {
         }
     }
 
-    /** Применяет записанные значения. Порядок важен: сначала гасим полёт, потом меняем право полёта. */
+    /** Применяет записанные значения. Сбой одного setter'а не мешает вернуть остальные свойства. */
     private void applyStuckState(Player player, StuckStateMarker marker) {
+        List<String> failures = new ArrayList<>(4);
         if (marker.flying()) {
-            player.setAllowFlight(true);
-            player.setFlying(true);
+            restoreProperty(player, "право полёта", failures, () -> player.setAllowFlight(true));
+            restoreProperty(player, "полёт", failures, () -> player.setFlying(true));
         } else {
-            player.setFlying(false);
-            player.setAllowFlight(marker.allowFlight());
+            // Сначала гасим полёт, потом меняем право полёта.
+            restoreProperty(player, "полёт", failures, () -> player.setFlying(false));
+            restoreProperty(player, "право полёта", failures, () -> player.setAllowFlight(marker.allowFlight()));
         }
-        player.setFlySpeed(marker.flySpeed());
-        player.setWalkSpeed(marker.walkSpeed());
-        player.setInvulnerable(marker.invulnerable());
-        player.setCollidable(marker.collidable());
-        player.setFoodLevel(marker.foodLevel());
-        player.setSaturation(marker.saturation());
+        restoreProperty(player, "скорость полёта", failures, () -> player.setFlySpeed(marker.flySpeed()));
+        restoreProperty(player, "скорость ходьбы", failures, () -> player.setWalkSpeed(marker.walkSpeed()));
+        restoreProperty(player, "неуязвимость", failures, () -> player.setInvulnerable(marker.invulnerable()));
+        restoreProperty(player, "коллизия", failures, () -> player.setCollidable(marker.collidable()));
+        restoreProperty(player, "уровень еды", failures, () -> player.setFoodLevel(marker.foodLevel()));
+        restoreProperty(player, "сытость", failures, () -> player.setSaturation(marker.saturation()));
+        if (!failures.isEmpty()) {
+            throw new IllegalStateException("Не восстановлены свойства: " + String.join(", ", failures));
+        }
     }
 
     /** Снятие защиты в момент выхода: только возврат состояния, без чата и боссбара. */
@@ -1250,7 +1257,6 @@ public final class ProtectionManager {
                 state.aboveCount = 0;   // пороги должны подтвердиться заново
                 state.belowCount = 0;
             }
-            fallGraceUntil.put(protection.getUuid(), now + cfg.fallDamageGraceMs);
         }
 
         Player target = (player != null && player.isOnline()) ? player : Bukkit.getPlayer(protection.getUuid());
@@ -1258,6 +1264,12 @@ public final class ProtectionManager {
             // Если доставить не удалось — в логе будет WARNING, а состояние игрока починится
             // при следующем входе по маркеру (writeStuckMarker).
             runOnChecked(target, "снятие защиты", () -> {
+                if (FallDamageGracePolicy.shouldGrant(reason, !target.isOnGround(), cfg.fallDamageGraceMs)) {
+                    fallGraceUntil.put(protection.getUuid(), System.currentTimeMillis() + cfg.fallDamageGraceMs);
+                } else {
+                    // Не даём будущему прыжку получить «льготу» за старую защиту, снятую на земле.
+                    fallGraceUntil.remove(protection.getUuid());
+                }
                 releaseFreeze(target, protection);
                 sendProtectEnd(target, protection, reason);
             });
@@ -1420,6 +1432,9 @@ public final class ProtectionManager {
         if (!protection.isSnapshotTaken()) {
             protection.captureSnapshot(player);
         }
+        // Если конфиг перезагрузят во время защиты, восстановление всё равно должно
+        // соответствовать режиму, который реально применили при её включении.
+        protection.captureFreezeMode(cfg.freezeMode);
 
         // «Расписка» в данных игрока: что вернуть, если защиту не удастся снять штатно
         // (выход игрока, краш сервера, выключение плагина). Пишется один раз за защиту.
@@ -1706,77 +1721,118 @@ public final class ProtectionManager {
      * и не трогаем индикатор (пакеты уходящему игроку бессмысленны).
      */
     private void releaseFreeze(Player player, Protection protection, boolean quiet) {
+        List<String> failures = new ArrayList<>(4);
+        if (!protection.isImmunityOnly()) {
+            // Всегда возвращаем снимок, даже если конфиг перезагрузили посреди защиты.
+            // Иначе, например, invulnerable=true мог остаться после смены настройки.
+            restoreProperty(player, "неуязвимость", failures,
+                    () -> player.setInvulnerable(protection.hadInvulnerable()));
+
+            PingShieldConfig.FreezeMode mode = protection.effectiveFreezeMode(cfg.freezeMode);
+            if (player.getGameMode() != GameMode.SPECTATOR) {
+                if (mode == PingShieldConfig.FreezeMode.FLY) {
+                    if (protection.hadAllowFlight() && protection.hadFlying()) {
+                        restoreProperty(player, "право полёта", failures, () -> player.setAllowFlight(true));
+                        restoreProperty(player, "полёт", failures, () -> player.setFlying(true));
+                    } else {
+                        restoreProperty(player, "полёт", failures, () -> player.setFlying(false));
+                        restoreProperty(player, "право полёта", failures,
+                                () -> player.setAllowFlight(protection.hadAllowFlight()));
+                    }
+                } else if (protection.forcedFlight()) {
+                    // Мы держали mayfly, чтобы сервер не кикнул за зависание, — возвращаем как было.
+                    restoreProperty(player, "полёт", failures, () -> player.setFlying(false));
+                    restoreProperty(player, "право полёта", failures,
+                            () -> player.setAllowFlight(protection.hadAllowFlight()));
+                    protection.setForcedFlight(false);
+                }
+                // Элитры: если игрока заморозили в глайде, вернуть глайд — иначе он начнёт падать.
+                if (protection.hadGliding() && !player.isGliding() && !player.isOnGround()) {
+                    restoreProperty(player, "глайд элитр", failures, () -> player.setGliding(true));
+                }
+            }
+
+            // Скорости восстанавливаем и в Spectator: игрок мог сменить режим, пока был заморожен,
+            // а нулевая walkSpeed иначе переживёт переход обратно в Survival.
+            if (mode != PingShieldConfig.FreezeMode.TELEPORT) {
+                restoreProperty(player, "скорость полёта", failures,
+                        () -> player.setFlySpeed(protection.getPrevFlySpeed()));
+                restoreProperty(player, "скорость ходьбы", failures,
+                        () -> player.setWalkSpeed(protection.getPrevWalkSpeed()));
+            }
+            // Снимок возвращаем независимо от текущего конфига: его могли изменить через reload.
+            restoreProperty(player, "коллизия", failures,
+                    () -> player.setCollidable(protection.hadCollidable()));
+            if (cfg.restoreFood) {
+                restoreProperty(player, "уровень еды", failures,
+                        () -> player.setFoodLevel(protection.hadFoodLevel()));
+                restoreProperty(player, "сытость", failures,
+                        () -> player.setSaturation(protection.hadSaturation()));
+            }
+        }
+
+        // Дополнительные свойства тоже обрабатываем независимо: ошибка одного не должна
+        // помешать восстановить скорость или снять флаг неуязвимости.
         try {
-            if (!protection.isImmunityOnly()) {
-                if (cfg.invulnerableFlag) {
-                    player.setInvulnerable(protection.hadInvulnerable());
-                }
-                PingShieldConfig.FreezeMode mode = protection.effectiveFreezeMode(cfg.freezeMode);
-                if (player.getGameMode() != GameMode.SPECTATOR) {
-                    if (mode == PingShieldConfig.FreezeMode.FLY) {
-                        if (protection.hadAllowFlight() && protection.hadFlying()) {
-                            player.setAllowFlight(true);
-                            player.setFlying(true);
-                        } else {
-                            player.setFlying(false);
-                            player.setAllowFlight(protection.hadAllowFlight());
-                        }
-                    } else if (protection.forcedFlight()) {
-                        // Мы держали mayfly, чтобы сервер не кикнул за зависание, — возвращаем как было.
-                        player.setFlying(false);
-                        player.setAllowFlight(protection.hadAllowFlight());
-                        protection.setForcedFlight(false);
-                    }
-                    // Элитры: если игрока заморозили в глайде, вернуть глайд — иначе он в первый же
-                    // момент после разморозки начнёт падать (сервер сам глайд не восстанавливает).
-                    if (protection.hadGliding() && !player.isGliding() && !player.isOnGround()) {
-                        player.setGliding(true);
-                    }
-                    if (mode != PingShieldConfig.FreezeMode.TELEPORT) {
-                        player.setFlySpeed(protection.getPrevFlySpeed());
-                        player.setWalkSpeed(protection.getPrevWalkSpeed());
-                    }
-                }
-                if (cfg.noCollision) {
-                    player.setCollidable(protection.hadCollidable());
-                }
-                // Справедливость: за время заморозки игрок не должен «съесть» весь запас еды
-                if (cfg.restoreFood) {
-                    player.setFoodLevel(protection.hadFoodLevel());
-                    player.setSaturation(protection.hadSaturation());
-                }
+            if (EnvironmentGuard.shouldClearFreezeTicks(cfg.clearFreezeTicks, player.getFreezeTicks())) {
+                player.setFreezeTicks(0);
             }
-            // Замерзание: сбрасываем и на разморозке, чтобы не получить урон FREEZE в первую секунду.
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Не удалось сбросить накопленное замерзание у " + player.getName(), throwable);
+        }
+        if (cfg.keepAir) {
             try {
-                if (EnvironmentGuard.shouldClearFreezeTicks(cfg.clearFreezeTicks, player.getFreezeTicks())) {
-                    player.setFreezeTicks(0);
-                }
-            } catch (Throwable ignored) {
-                // не критично
-            }
-            // Воздух: пока игрок был заморожен, он не мог всплыть — отдаём полный запас,
-            // иначе он задохнётся в первую же секунду после снятия защиты (см. EnvironmentGuard).
-            if (cfg.keepAir) {
                 int max = player.getMaximumAir();
                 int air = EnvironmentGuard.airAfterFreeze(true, player.getRemainingAir(), max);
                 if (air != player.getRemainingAir()) {
                     player.setRemainingAir(air);
                 }
+            } catch (Throwable throwable) {
+                plugin.getLogger().log(Level.WARNING,
+                        "Не удалось восстановить запас воздуха у " + player.getName(), throwable);
             }
-            for (PotionEffectType type : new ArrayList<>(protection.getAppliedEffects())) {
+        }
+        for (PotionEffectType type : new ArrayList<>(protection.getAppliedEffects())) {
+            try {
                 player.removePotionEffect(type);
+                protection.getAppliedEffects().remove(type);
+            } catch (Throwable throwable) {
+                plugin.getLogger().log(Level.WARNING,
+                        "Не удалось снять эффект " + type + " у " + player.getName(), throwable);
             }
-            protection.getAppliedEffects().clear();
+        }
 
-            if (!quiet) {
+        if (!quiet) {
+            try {
                 hideIndicator(player, protection);
-                applyReleaseEffects(player);
+            } catch (Throwable throwable) {
+                plugin.getLogger().log(Level.FINE, "Не удалось убрать индикатор у " + player.getName(), throwable);
             }
-            // Состояние возвращено — расписка больше не нужна.
-            clearStuckMarker(player);
+            applyReleaseEffects(player);
+        }
+
+        if (failures.isEmpty()) {
+            if (!clearStuckMarker(player)) {
+                failures.add("маркер восстановления");
+            }
+        }
+        if (!failures.isEmpty()) {
+            plugin.getLogger().warning("PingShield: не удалось полностью восстановить состояние "
+                    + player.getName() + " (" + String.join(", ", failures)
+                    + "); маркер сохранён, запланирую повторную попытку");
+            retryStuckStateRepair(player, true);
+        }
+    }
+
+    /** Одна ошибка Bukkit API не должна обрывать восстановление остальных свойств игрока. */
+    private void restoreProperty(Player player, String property, List<String> failures, Runnable restore) {
+        try {
+            restore.run();
         } catch (Throwable throwable) {
-            plugin.getLogger().log(Level.WARNING, "Не удалось корректно разморозить " + player.getName()
-                    + " — проверьте конфликты с другими плагинами", throwable);
+            failures.add(property);
+            plugin.getLogger().log(Level.WARNING,
+                    "PingShield: не удалось восстановить " + property + " игроку " + player.getName(), throwable);
         }
     }
 
@@ -1789,6 +1845,12 @@ public final class ProtectionManager {
             return;
         }
         for (PotionEffectType type : cfg.releaseEffects) {
+            // Slow Falling нужен только если игрок действительно отпускается в воздухе.
+            // На земле он давал бы бесплатную защиту от последующего, уже нового падения.
+            if (type.equals(PotionEffectType.SLOW_FALLING)
+                    && !FallDamageGracePolicy.shouldApplySlowFalling(player.isOnGround())) {
+                continue;
+            }
             try {
                 player.addPotionEffect(new PotionEffect(type, cfg.releaseEffectsDurationTicks, 0, true, false, false));
             } catch (Throwable ignored) {
@@ -2111,8 +2173,17 @@ public final class ProtectionManager {
     public void handleRespawn(Player player) {
         Protection protection = get(player);
         if (protection != null) {
-            // после смерти полёт сбрасывается сервером — снимаем защиту, чтобы не осталась заморозка
+            // После смерти полёт сбрасывается сервером — снимаем защиту, чтобы не осталась заморозка.
             end(player, protection, EndReason.DEATH);
+        }
+        // PlayerDeathEvent мог уже снять Protection из active, но восстановление отдельных
+        // свойств могло завершиться ошибкой. Проверяем сохранённый маркер после применения
+        // состояния респауна, даже если активной защиты в карте больше нет.
+        try {
+            player.getScheduler().runDelayed(plugin, task -> repairStuckState(player, true), null, 1L);
+        } catch (Throwable throwable) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Не удалось запланировать восстановление состояния после смерти у " + player.getName(), throwable);
         }
     }
 
